@@ -12,7 +12,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "desktop:icons": "node scripts/gen-icons.mjs"
+    "desktop:icons": "node scripts/gen-icons.mjs",
+    "mobile": "npm --prefix mobile start"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.2",

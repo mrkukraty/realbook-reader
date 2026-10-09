@@ -44,14 +44,15 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "start": "expo start --go",
+    "android": "expo start --go --android",
+    "ios": "expo start --go --ios",
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "doctor": "npx expo-doctor",
     "export:android": "expo export --platform android --output-dir dist-check",
-    "vendor:pdfjs": "node scripts/vendor-pdfjs.mjs"
+    "vendor:pdfjs": "node scripts/vendor-pdfjs.mjs",
+    "start:dev-client": "expo start --dev-client"
   },
   "private": true,
   "jest": {
