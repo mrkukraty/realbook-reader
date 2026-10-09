@@ -1,0 +1,7 @@
+/* Reader theme defaults (overridden inline by themeVars() from src/features/reader/themes.ts) */
+.rb-reader, .rb-root {
+  --rb-page: #f6efdc; --rb-text: #2a2118; --rb-desk: #3a2a1e; --rb-shadow: 40,25,10; --rb-grain: .3;
+  --rb-chrome: #fbf6e9; --rb-chrome-text: #2a2118; --rb-chrome-border: #d9ccb0; --rb-accent: #8a4b2a; --rb-link: #7a3b1d;
+  --rb-leather: #5a2f1c; --rb-shade: .6;
+}
+.rb-reader[data-dark='1'] { color-scheme: dark; }

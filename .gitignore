@@ -1,0 +1,16 @@
+node_modules
+dist
+dev-dist
+src-tauri/target
+src-tauri/gen
+*.log
+.DS_Store
+coverage
+
+# local / generated
+.claude/settings.local.json
+mobile/.expo
+mobile/dist
+mobile/android
+mobile/ios
+*.tsbuildinfo

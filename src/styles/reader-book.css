@@ -1,0 +1,93 @@
+/* ---- Physical book chrome + page-flip (see src/features/page-flip/Book.tsx) ---- */
+.rb-cover { position: relative; border-radius: 10px; background:
+    var(--rb-cloth), linear-gradient(145deg, color-mix(in srgb, var(--rb-leather) 85%, #fff 15%), var(--rb-leather) 45%, color-mix(in srgb, var(--rb-leather) 80%, #000 20%));
+  box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 0 0 1px rgba(0,0,0,.45), 0 18px 40px -8px rgba(var(--rb-shadow), calc(.55 * var(--rb-shade) + .25)), 0 4px 10px rgba(0,0,0,.35);
+  flex: none; }
+.rb-cover::after { content: ''; position: absolute; inset: 5px; border-radius: 6px; pointer-events: none;
+  border: 1px solid rgba(255,230,190,.14); box-shadow: inset 0 0 14px rgba(0,0,0,.45); }
+.rb-cover-none { background: none; box-shadow: none; border-radius: 2px; }
+.rb-cover-none::after { display: none; }
+.rb-block { position: relative; }
+.rb-edge { position: absolute; top: 3px; bottom: 3px; pointer-events: none; border-radius: 2px;
+  background: repeating-linear-gradient(90deg, var(--rb-page) 0 1px, rgba(var(--rb-shadow), .28) 1px 2px);
+  box-shadow: inset 0 0 4px rgba(0,0,0,.25); }
+.rb-edge-l { background: repeating-linear-gradient(270deg, var(--rb-page) 0 1px, rgba(var(--rb-shadow), .28) 1px 2px); }
+
+.rb-book { position: relative; touch-action: pan-y pinch-zoom; user-select: text; transform-style: flat; }
+.rb-slot { position: absolute; top: 0; height: 100%; }
+.rb-page { position: absolute; inset: 0; background: var(--rb-page); color: var(--rb-text); overflow: hidden; }
+.rb-page-empty { background: color-mix(in srgb, var(--rb-page) 78%, var(--rb-leather) 22%); }
+.rb-page-content { position: absolute; inset: 0; }
+.rb-page-gutter { position: absolute; top: 0; bottom: 0; width: 15%; pointer-events: none; }
+.rb-page-left .rb-page-gutter { right: 0; background: linear-gradient(270deg, rgba(var(--rb-shadow), calc(.3 * var(--rb-shade) + .06)), transparent); }
+.rb-page-right .rb-page-gutter { left: 0; background: linear-gradient(90deg, rgba(var(--rb-shadow), calc(.3 * var(--rb-shade) + .06)), transparent); }
+.rb-page-single .rb-page-gutter { left: 0; width: 6%; background: linear-gradient(90deg, rgba(var(--rb-shadow), calc(.18 * var(--rb-shade))), transparent); }
+.rb-page::after { content: ''; position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 28px rgba(var(--rb-shadow), calc(.16 * var(--rb-shade))); }
+.rb-grain { position: absolute; inset: 0; pointer-events: none; opacity: var(--rb-grain, .3); mix-blend-mode: multiply;
+  background-image: var(--rb-grain-img); background-size: 220px 220px; }
+[data-dark='1'] .rb-grain { mix-blend-mode: screen; opacity: calc(var(--rb-grain, .3) * .35); }
+.rb-spine { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; margin-left: -1px; pointer-events: none;
+  background: linear-gradient(90deg, rgba(0,0,0,.35), rgba(255,255,255,.08)); z-index: 1; }
+
+.rb-ghost { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.rb-castwrap { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 4; }
+.rb-cast { position: absolute; left: 0; top: 0; height: 100%; transform-origin: 0 0; will-change: transform, opacity;
+  background: linear-gradient(90deg, rgba(var(--rb-shadow), calc(.7 * var(--s))), rgba(var(--rb-shadow), calc(.25 * var(--s))) 40%, transparent); }
+.rb-leaf { position: absolute; top: 0; height: 100%; z-index: 5; transform-style: preserve-3d; pointer-events: none; }
+.rb-face { position: absolute; inset: 0; backface-visibility: hidden; -webkit-backface-visibility: hidden; overflow: hidden; }
+.rb-face-back { transform: rotateY(180deg); }
+.rb-curl, .rb-dark, .rb-spec { position: absolute; inset: 0; pointer-events: none; }
+.rb-face-front .rb-curl { background: linear-gradient(90deg, transparent 0, rgba(var(--rb-shadow), .28) 45%, rgba(255,255,255,.18) 78%, rgba(var(--rb-shadow), .32) 100%); opacity: calc(var(--c, 0) * var(--s)); }
+.rb-face-back .rb-curl { background: linear-gradient(90deg, rgba(var(--rb-shadow), .32) 0, rgba(255,255,255,.18) 22%, rgba(var(--rb-shadow), .28) 55%, transparent 100%); opacity: calc(var(--c, 0) * var(--s)); }
+.rb-face-front .rb-dark { background: #000; opacity: calc(var(--f, 0) * .32 * var(--s)); }
+.rb-face-back .rb-dark { background: #000; opacity: calc(var(--b, 0) * .32 * var(--s)); }
+.rb-spec { background: linear-gradient(100deg, transparent 55%, rgba(255,255,255,.35) 62%, transparent 70%); opacity: calc(var(--c, 0) * .8); mix-blend-mode: soft-light; }
+
+.rb-zone { position: absolute; z-index: 6; touch-action: none; }
+.rb-zone-edge { cursor: pointer; }
+.rb-zone-corner { cursor: grab; }
+.rb-zone[data-disabled] { pointer-events: none; }
+.rb-peel { position: absolute; width: 0; height: 0; opacity: 0; transition: width .18s, height .18s, opacity .18s; pointer-events: none; bottom: 0; }
+.rb-corner-r .rb-peel { right: 0; background: linear-gradient(135deg, transparent 50%, rgba(0,0,0,.25) 50%, var(--rb-page) 62%); box-shadow: -3px -3px 6px rgba(0,0,0,.25); }
+.rb-corner-l .rb-peel { left: 0; background: linear-gradient(225deg, transparent 50%, rgba(0,0,0,.25) 50%, var(--rb-page) 62%); box-shadow: 3px -3px 6px rgba(0,0,0,.25); }
+.rb-zone-corner:hover .rb-peel { width: 26px; height: 26px; opacity: 1; }
+@media (hover: none) { .rb-peel { display: none; } }
+[data-turning] .rb-zone { pointer-events: none; }
+
+/* paper grain: SVG feTurbulence, tiled */
+:root { --rb-grain-img: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n' x='0' y='0' width='100%25' height='100%25'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .38  0 0 0 0 .3  0 0 0 0 .2  0 0 0 .9 -.25'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  --rb-cloth: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='c' x='0' y='0' width='100%25' height='100%25'><feTurbulence type='fractalNoise' baseFrequency='.9 .3' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .55 -.1'/></filter><rect width='100%25' height='100%25' filter='url(%23c)'/></svg>"); }
+
+/* ---- reflow page ---- */
+.rb-reflow { position: absolute; inset: 0; }
+.rb-vp { position: absolute; overflow: hidden; }
+.rb-flow { font-family: var(--f-family); font-size: var(--f-size); line-height: var(--f-lh); text-align: var(--f-align); hyphens: auto; -webkit-hyphens: auto;
+  overflow-wrap: break-word; color: var(--rb-text); column-gap: 0; column-fill: auto; will-change: auto; }
+.rb-flow > :first-child { margin-top: 0; }
+.rb-flow p { margin: 0 0 .7em; orphans: 2; widows: 2; }
+.rb-flow h1, .rb-flow h2, .rb-flow h3, .rb-flow h4 { break-after: avoid; line-height: 1.2; margin: .9em 0 .5em; text-align: left; hyphens: manual; }
+.rb-flow h1 { font-size: 1.6em; } .rb-flow h2 { font-size: 1.35em; } .rb-flow h3 { font-size: 1.15em; }
+.rb-flow img, .rb-flow svg, .rb-flow video { max-width: 100%; max-height: var(--f-ch); height: auto; width: auto; object-fit: contain; break-inside: avoid; display: block; margin: .5em auto; }
+.rb-flow figure, .rb-flow table, .rb-flow pre, .rb-flow blockquote { break-inside: avoid; max-width: 100%; }
+.rb-flow pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; font-size: .88em; }
+.rb-flow blockquote { margin: .8em 1.2em; font-style: italic; }
+.rb-flow a { color: var(--rb-link); text-decoration: underline; text-underline-offset: 2px; }
+.rb-flow hr { border: 0; border-top: 1px solid currentColor; opacity: .3; margin: 1em 0; }
+.rb-flow ul, .rb-flow ol { padding-left: 1.4em; }
+.rb-flow-measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; overflow: hidden; z-index: -1; }
+.rb-hl { color: inherit; border-radius: 2px; cursor: pointer; }
+.rb-hl-yellow { background: rgba(255, 213, 74, .55); }
+.rb-hl-green { background: rgba(120, 208, 120, .5); }
+.rb-hl-blue { background: rgba(110, 170, 240, .45); }
+.rb-hl-pink { background: rgba(240, 130, 180, .45); }
+.rb-hl-hit { background: rgba(255, 140, 0, .55); outline: 2px solid rgba(255, 140, 0, .8); }
+.rb-hl-note { border-bottom: 2px dotted rgba(0,0,0,.45); }
+
+/* ---- fixed pages ---- */
+.rb-fixed { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--rb-page); }
+.rb-fixed-host { position: absolute; inset: 0; }
+.rb-fixed-host canvas, .rb-fixed-host img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.rb-fixed-links a { position: absolute; display: block; }
+.rb-fixed-links a:hover { background: rgba(80,140,255,.15); }
+.rb-fixed-loading { position: absolute; inset: 0; display: grid; place-items: center; opacity: .5; font: 13px system-ui; }
+.rb-offscreen { position: fixed; left: -99999px; top: 0; pointer-events: none; visibility: hidden; }
