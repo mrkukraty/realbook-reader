@@ -1,0 +1,59 @@
+{
+  "expo": {
+    "name": "RealBook Reader",
+    "slug": "realbook-reader",
+    "scheme": "realbook",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#5b4636",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.realbook.reader",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "UISupportsDocumentBrowser": false,
+        "LSSupportsOpeningDocumentsInPlace": false
+      }
+    },
+    "android": {
+      "package": "com.realbook.reader",
+      "adaptiveIcon": {
+        "backgroundColor": "#5b4636",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
+          "resizeMode": "contain",
+          "backgroundColor": "#fbf6e9",
+          "dark": {
+            "image": "./assets/splash-icon.png",
+            "backgroundColor": "#22201d"
+          }
+        }
+      ],
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}

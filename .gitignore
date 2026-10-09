@@ -14,3 +14,4 @@ mobile/dist
 mobile/android
 mobile/ios
 *.tsbuildinfo
+mobile/dist-check
