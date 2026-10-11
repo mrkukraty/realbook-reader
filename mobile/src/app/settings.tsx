@@ -73,7 +73,7 @@ export default function SettingsScreen() {
         <Text style={{ color: t.chromeText }}>{`${books.length} book${books.length === 1 ? '' : 's'} Â· ${formatBytes(usage.books)} stored in the app`}</Text>
         <Text style={{ color: t.chromeText, marginTop: 4 }}>{`Rendered page cache: ${formatBytes(usage.cache)}`}</Text>
         {usage.free !== null ? <Text style={{ color: t.muted, marginTop: 4 }}>{`Free on device: ${formatBytes(usage.free)}${usage.total ? ` of ${formatBytes(usage.total)}` : ''}`}</Text> : null}
-        <Text style={{ color: t.muted, marginTop: 6, fontSize: 12 }}>All books, progress, bookmarks and notes are stored only on this device. Nothing is uploaded.</Text>
+        <Text style={{ color: t.muted, marginTop: 6, fontSize: 12 }}>Books, progress, bookmarks and notes are stored on this device. Nothing is uploaded unless you sign in to an account, which copies your books and reading positions to your private space.</Text>
         <Btn title="Clear page cache" kind="secondary" icon="trash-bin-outline" style={{ marginTop: 10 }} onPress={() => {
           Alert.alert('Clear page cache?', 'Deletes rendered PDF pages and extracted comic images. They are re-created when you read. Your books are not affected.', [
             { text: 'Cancel', style: 'cancel' },
