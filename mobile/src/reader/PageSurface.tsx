@@ -16,7 +16,8 @@ export type SurfaceEvent =
   | { type: 'link'; section: number; anchor: string }
   | { type: 'ext'; url: string }
   | { type: 'selection'; text: string; start?: number; end?: number }
-  | { type: 'hl'; id: string };
+  | { type: 'hl'; id: string }
+  | { type: 'pinch'; scale: number };
 
 export interface SurfaceHighlight { id: string; start: number; end: number; color: string; note?: string }
 

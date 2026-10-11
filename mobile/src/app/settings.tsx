@@ -5,7 +5,9 @@ import { useReducedMotion } from 'react-native-reanimated';
 import { useSettings } from '@/state/settings-store';
 import { Btn, Card, SectionTitle, Segmented, Stepper, useAppTheme, styles } from '@/components/ui';
 import { PERF_PROFILES } from '@/settings/themes';
-import { ThemePicker, TypographyControls } from '@/components/settings-controls';
+import { ComfortControls, ThemePicker, TypographyControls } from '@/components/settings-controls';
+import { ReadingStatusCard } from '@/reader/FocusTimer';
+import { useStats } from '@/state/stats-store';
 import { LIMITS, type PerfMode } from '@/settings/types';
 import { clearPageCache, storageUsage } from '@/platform/files';
 import { formatBytes } from '@/storage/library-logic';
@@ -19,6 +21,8 @@ export default function SettingsScreen() {
   const reset = useSettings((x) => x.reset);
   const reduceMotion = useReducedMotion();
   const books = useLibrary((x) => x.books);
+  const stats = useStats((x) => x.stats);
+  useFocusEffect(useCallback(() => { void useStats.getState().load(); }, []));
   const [usage, setUsage] = useState(() => ({ books: 0, cache: 0, free: null as number | null, total: null as number | null }));
 
   useFocusEffect(useCallback(() => { try { setUsage(storageUsage()); } catch { /* ignore */ } }, []));
@@ -28,6 +32,12 @@ export default function SettingsScreen() {
       <Stack.Screen options={{ title: 'Settings' }} />
       <SectionTitle>Theme</SectionTitle>
       <ThemePicker value={s.theme} onChange={(v) => update({ theme: v })} />
+
+      <SectionTitle>Reading status</SectionTitle>
+      <Card><ReadingStatusCard stats={stats} /></Card>
+
+      <SectionTitle>Comfort</SectionTitle>
+      <Card><ComfortControls /></Card>
 
       <SectionTitle>Typography</SectionTitle>
       <Card><TypographyControls /></Card>

@@ -13,27 +13,52 @@ export interface Theme {
   dark: boolean;
   chrome: string;    // toolbar background
   chromeText: string;
+  /** e-reader look: the page fills the screen, no book frame / edges / shadows, instant page changes */
+  flat?: boolean;
 }
 
 export const THEMES: Record<ThemeId, Theme> = {
   ivory: { id: 'ivory', label: 'Classic Ivory', page: '#fbf6e9', text: '#2b2621', muted: '#7a6f62', accent: '#8a4b20', desk: '#5b4636', edge: '#e9dfc8', gutter: 'rgba(60,40,20,0.28)', dark: false, chrome: '#f4ecdb', chromeText: '#2b2621' },
   parchment: { id: 'parchment', label: 'Antique Parchment', page: '#f1e2bf', text: '#3b2e1e', muted: '#806a4a', accent: '#7a3e12', desk: '#4a3524', edge: '#dcc89c', gutter: 'rgba(80,50,15,0.34)', dark: false, chrome: '#e8d6ac', chromeText: '#3b2e1e' },
   eink: { id: 'eink', label: 'Clean E-Ink', page: '#f2f2ef', text: '#111111', muted: '#666666', accent: '#000000', desk: '#bdbdb8', edge: '#dddddb', gutter: 'rgba(0,0,0,0.14)', dark: false, chrome: '#e8e8e5', chromeText: '#111111' },
+  kindle: { id: 'kindle', label: 'Kindle', page: '#f1efe8', text: '#151515', muted: '#6e6c66', accent: '#151515', desk: '#f1efe8', edge: '#f1efe8', gutter: 'rgba(0,0,0,0)', dark: false, chrome: '#fbfaf6', chromeText: '#151515', flat: true },
   sepia: { id: 'sepia', label: 'Sepia', page: '#efe0c6', text: '#4a3826', muted: '#86705a', accent: '#8b5a2b', desk: '#3d2f22', edge: '#d9c6a4', gutter: 'rgba(70,45,20,0.3)', dark: false, chrome: '#e5d3b4', chromeText: '#4a3826' },
   night: { id: 'night', label: 'Night Reading', page: '#22201d', text: '#cfc6b6', muted: '#8d8476', accent: '#d4a463', desk: '#121110', edge: '#2e2b27', gutter: 'rgba(0,0,0,0.55)', dark: true, chrome: '#1b1a18', chromeText: '#d8cfbf' },
   black: { id: 'black', label: 'Pure Black', page: '#000000', text: '#b9b9b9', muted: '#777777', accent: '#c9a36b', desk: '#000000', edge: '#151515', gutter: 'rgba(40,40,40,0.6)', dark: true, chrome: '#0a0a0a', chromeText: '#c8c8c8' },
 };
-export const THEME_ORDER: ThemeId[] = ['ivory', 'parchment', 'eink', 'sepia', 'night', 'black'];
+export const THEME_ORDER: ThemeId[] = ['kindle', 'ivory', 'parchment', 'eink', 'sepia', 'night', 'black'];
 
-/** CSS font stacks used inside the WebView (system fonts only - nothing is downloaded). */
-export const FONT_STACKS: Record<FontFamilyId, { label: string; css: string }> = {
-  serif: { label: 'Book Serif', css: "'Iowan Old Style','Palatino','Noto Serif','Droid Serif',Georgia,serif" },
-  georgia: { label: 'Georgia', css: "Georgia,'Noto Serif',serif" },
-  garamond: { label: 'Garamond-like', css: "'EB Garamond',Garamond,'Baskerville','Times New Roman','Noto Serif',serif" },
-  sans: { label: 'Sans', css: "-apple-system,'Roboto','Helvetica Neue',Arial,sans-serif" },
-  mono: { label: 'Monospace', css: "'Menlo','Roboto Mono','Courier New',monospace" },
-  dyslexic: { label: 'Readable Sans (wide)', css: "'Verdana','Tahoma','Roboto',sans-serif" },
+export type FontGroup = 'Classic' | 'Modern' | 'Handwritten' | 'Typewriter';
+
+/**
+ * Fonts used inside the WebView. System fonts only - nothing is downloaded. Each stack names the iOS font
+ * first, then Android's closest built-in ('casual' = Coming Soon, 'cursive' = Dancing Script,
+ * 'serif-monospace' = Cutive Mono). `preview` is the native fontFamily used to draw the picker label.
+ */
+export const FONT_STACKS: Record<FontFamilyId, { label: string; group: FontGroup; css: string; preview: { ios?: string; android?: string } }> = {
+  serif: { label: 'Book Serif', group: 'Classic', css: "'Iowan Old Style','Palatino','Noto Serif','Droid Serif',Georgia,serif", preview: { ios: 'Iowan Old Style', android: 'serif' } },
+  georgia: { label: 'Georgia', group: 'Classic', css: "Georgia,'Noto Serif',serif", preview: { ios: 'Georgia', android: 'serif' } },
+  garamond: { label: 'Garamond-like', group: 'Classic', css: "'EB Garamond',Garamond,'Baskerville','Times New Roman','Noto Serif',serif", preview: { ios: 'Baskerville', android: 'serif' } },
+  baskerville: { label: 'Baskerville', group: 'Classic', css: "'Baskerville','Libre Baskerville','Noto Serif',serif", preview: { ios: 'Baskerville', android: 'serif' } },
+  charter: { label: 'Charter', group: 'Classic', css: "'Charter','Bitstream Charter','Noto Serif',serif", preview: { ios: 'Charter', android: 'serif' } },
+  didot: { label: 'Didot', group: 'Classic', css: "'Didot','Bodoni 72','Noto Serif',serif", preview: { ios: 'Didot', android: 'serif' } },
+  cochin: { label: 'Cochin', group: 'Classic', css: "'Cochin','Palatino','Noto Serif',serif", preview: { ios: 'Cochin', android: 'serif' } },
+  sans: { label: 'Sans', group: 'Modern', css: "-apple-system,'Roboto','Helvetica Neue',Arial,sans-serif", preview: {} },
+  avenir: { label: 'Avenir', group: 'Modern', css: "'Avenir Next','Avenir','Roboto',sans-serif", preview: { ios: 'Avenir Next', android: 'sans-serif' } },
+  optima: { label: 'Optima', group: 'Modern', css: "'Optima','Candara','Roboto',sans-serif", preview: { ios: 'Optima', android: 'sans-serif' } },
+  futura: { label: 'Futura', group: 'Modern', css: "'Futura','Century Gothic','sans-serif-medium',sans-serif", preview: { ios: 'Futura', android: 'sans-serif-medium' } },
+  gill: { label: 'Gill Sans', group: 'Modern', css: "'Gill Sans','Gill Sans MT','sans-serif-light',sans-serif", preview: { ios: 'Gill Sans', android: 'sans-serif-light' } },
+  dyslexic: { label: 'Readable Sans (wide)', group: 'Modern', css: "'Verdana','Tahoma','Roboto',sans-serif", preview: { ios: 'Verdana', android: 'sans-serif' } },
+  handwritten: { label: 'Handwritten', group: 'Handwritten', css: "'Bradley Hand','Noteworthy','casual',cursive", preview: { ios: 'Bradley Hand', android: 'casual' } },
+  notebook: { label: 'Notebook', group: 'Handwritten', css: "'Noteworthy','Chalkboard SE','casual',cursive", preview: { ios: 'Noteworthy', android: 'casual' } },
+  marker: { label: 'Marker', group: 'Handwritten', css: "'Marker Felt','casual',cursive", preview: { ios: 'Marker Felt', android: 'casual' } },
+  chalkboard: { label: 'Chalkboard', group: 'Handwritten', css: "'Chalkboard SE','Comic Sans MS','casual',sans-serif", preview: { ios: 'Chalkboard SE', android: 'casual' } },
+  script: { label: 'Elegant Script', group: 'Handwritten', css: "'Snell Roundhand','Apple Chancery','Dancing Script','cursive',cursive", preview: { ios: 'Snell Roundhand', android: 'cursive' } },
+  calligraphy: { label: 'Calligraphy', group: 'Handwritten', css: "'Savoye LET','Snell Roundhand','Dancing Script','cursive',cursive", preview: { ios: 'Savoye LET', android: 'cursive' } },
+  typewriter: { label: 'Typewriter', group: 'Typewriter', css: "'American Typewriter','Courier New','serif-monospace',monospace", preview: { ios: 'American Typewriter', android: 'serif-monospace' } },
+  mono: { label: 'Monospace', group: 'Typewriter', css: "'Menlo','Roboto Mono','Courier New',monospace", preview: { ios: 'Menlo', android: 'monospace' } },
 };
+export const FONT_GROUPS: FontGroup[] = ['Classic', 'Modern', 'Handwritten', 'Typewriter'];
 
 export interface PerfProfile {
   id: PerfMode;

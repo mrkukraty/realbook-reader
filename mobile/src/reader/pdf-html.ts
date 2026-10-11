@@ -2,6 +2,7 @@
 // RN sends the PDF as base64 chunks via postMessage, then requests pages; the page renders to a canvas and
 // returns a JPEG data URL, which RN caches as a file and displays with <Image>.
 import { PDFJS_SRC, PDFJS_WORKER_SRC } from '../vendor/pdfjs.generated';
+import { PDF_TEXT_JS } from './pdf-text-js';
 
 const safe = (s: string) => s.replace(/<\/script/gi, '<\\/script');
 
@@ -24,13 +25,18 @@ function open(){var total=0;var parts=chunks.map(b64ToBytes);parts.forEach(funct
    return flat(outline).then(function(toc){post({type:'opened',pageCount:d.numPages,aspect:v.width/v.height,toc:toc});});});});})
  .catch(function(e){var msg=String(e&&e.message||e);post({type:'error',name:e&&e.name,msg:msg});});}
 var queue=Promise.resolve();
-function render(page,width,quality){queue=queue.then(function(){if(!doc)return;return doc.getPage(page+1).then(function(p){var v1=p.getViewport({scale:1});var scale=Math.min(4,width/v1.width);var v=p.getViewport({scale:scale});
+function render(page,width,quality,tint){queue=queue.then(function(){if(!doc)return;return doc.getPage(page+1).then(function(p){var v1=p.getViewport({scale:1});var scale=Math.min(4,width/v1.width);var v=p.getViewport({scale:scale});
  var cv=document.createElement('canvas');cv.width=Math.floor(v.width);cv.height=Math.floor(v.height);var ctx=cv.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,cv.width,cv.height);
- return p.render({canvasContext:ctx,viewport:v}).promise.then(function(){var url=cv.toDataURL('image/jpeg',quality||0.85);cv.width=cv.height=0;p.cleanup();post({type:'page',page:page,width:width,data:url});});})
+ return p.render({canvasContext:ctx,viewport:v}).promise.then(function(){if(tint)recolor(ctx,cv,tint);var url=cv.toDataURL('image/jpeg',quality||0.85);cv.width=cv.height=0;p.cleanup();post({type:'page',page:page,width:width,tag:tint?tint.tag:'',data:url});});})
  .catch(function(e){post({type:'pageError',page:page,msg:String(e&&e.message||e)});});});}
+// theme colours: map luminance onto a paper->ink ramp (white paper -> theme page, black ink -> theme text)
+function recolor(ctx,cv,t){var id=ctx.getImageData(0,0,cv.width,cv.height),d=id.data,bg=t.bg,fg=t.fg,dr=bg[0]-fg[0],dg=bg[1]-fg[1],db=bg[2]-fg[2];
+ for(var i=0;i<d.length;i+=4){var l=(d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114)/255;d[i]=fg[0]+dr*l;d[i+1]=fg[1]+dg*l;d[i+2]=fg[2]+db*l;}ctx.putImageData(id,0,0);}
+${PDF_TEXT_JS}
+function html(page){queue=queue.then(function(){if(!doc)return;return doc.getPage(page+1).then(function(p){return p.getTextContent().then(function(tc){post({type:'html',page:page,html:toHtml(tc.items)});});}).catch(function(){post({type:'html',page:page,html:''});});});}
 function text(page){queue=queue.then(function(){if(!doc)return;return doc.getPage(page+1).then(function(p){return p.getTextContent().then(function(tc){post({type:'text',page:page,text:tc.items.map(function(i){return i.str;}).join(' ')});});}).catch(function(){post({type:'text',page:page,text:''});});});}
 function onMsg(ev){var m;try{m=JSON.parse(ev.data);}catch(e){return;}
- if(m.type==='chunk')chunks.push(m.data);else if(m.type==='open')open();else if(m.type==='render')render(m.page,m.width,m.quality);else if(m.type==='text')text(m.page);}
+ if(m.type==='chunk')chunks.push(m.data);else if(m.type==='open')open();else if(m.type==='render')render(m.page,m.width,m.quality,m.tint);else if(m.type==='html')html(m.page);else if(m.type==='text')text(m.page);}
 document.addEventListener('message',onMsg);window.addEventListener('message',onMsg);
 post({type:'boot',ok:!!lib});
 })();</script></body></html>`;

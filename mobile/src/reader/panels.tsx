@@ -2,10 +2,10 @@
 import React from 'react';
 import { ActivityIndicator, FlatList, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { IconBtn, useAppTheme } from '../components/ui';
+import { IconBtn, Segmented, styles, useAppTheme } from '../components/ui';
 import type { TocItem } from '../formats/types';
 import type { Bookmark, Highlight } from '../storage/types';
-import { ThemePicker, TypographyControls } from '../components/settings-controls';
+import { ComfortControls, ThemePicker, TypographyControls } from '../components/settings-controls';
 import { useSettings } from '../state/settings-store';
 
 export function Sheet({ visible, title, onClose, children, right }: { visible: boolean; title: string; onClose(): void; children: React.ReactNode; right?: React.ReactNode }) {
@@ -130,16 +130,43 @@ export function SearchPanel({ visible, query, setQuery, onSubmit, results, busy,
   );
 }
 
-export function AppearancePanel({ visible, onClose, reflow }: { visible: boolean; onClose(): void; reflow: boolean }) {
+export function AppearancePanel({ visible, onClose, reflow, pdf }: { visible: boolean; onClose(): void; reflow: boolean; pdf?: boolean }) {
   const t = useAppTheme();
   const s = useSettings((x) => x.settings);
   const update = useSettings((x) => x.update);
   return (
     <Sheet visible={visible} title="Appearance" onClose={onClose}>
       <ScrollView contentContainerStyle={{ padding: 16 }}>
-        <ThemePicker value={s.theme} onChange={(v) => update({ theme: v })} />
+        {pdf ? (
+          <View style={{ marginBottom: 14 }}>
+            <View style={styles.row}>
+              <Text style={{ color: t.chromeText, fontWeight: '600' }}>Read this PDF as</Text>
+              <View style={{ width: 180 }}>
+                <Segmented options={[{ value: 'page', label: 'Pages' }, { value: 'text', label: 'Text' }]} value={s.pdfView} onChange={(v) => update({ pdfView: v })} />
+              </View>
+            </View>
+            <Text style={{ color: t.muted, fontSize: 12, lineHeight: 17 }}>
+              {s.pdfView === 'text'
+                ? 'Text view re-flows the words of each page, so the fonts and sizes below apply. Pictures and complex layouts are only shown in Pages view.'
+                : 'Pages view shows the printed page. Switch to Text to choose your own font and text size.'}
+            </Text>
+          </View>
+        ) : null}
+        {/* Kindle also brings a Bookerly-like font */}
+        <ThemePicker value={s.theme} onChange={(v) => update(v === 'kindle' ? { theme: v, fontFamily: 'charter' } : { theme: v })} />
+        {pdf && s.pdfView === 'page' ? (
+          <View style={[styles.row, { marginTop: 12 }]}>
+            <Text style={{ color: t.chromeText }}>Page colours</Text>
+            <View style={{ width: 180 }}>
+              <Segmented options={[{ value: 'theme', label: 'Theme' }, { value: 'original', label: 'Original' }]} value={s.pdfColors} onChange={(v) => update({ pdfColors: v })} />
+            </View>
+          </View>
+        ) : null}
         <View style={{ height: 16 }} />
-        {reflow ? <TypographyControls /> : <Text style={{ color: t.muted }}>Fonts and margins apply to text books. PDF and comic pages are images and keep their own layout.</Text>}
+        <Text style={{ color: t.muted, marginBottom: 4 }}>Comfort</Text>
+        <ComfortControls />
+        <View style={{ height: 16 }} />
+        {reflow ? <TypographyControls /> : <Text style={{ color: t.muted, lineHeight: 20 }}>{pdf ? 'Pinch outward on a page to zoom in; drag to move around, and pinch back in (or double-tap) to return to page turning.' : "Comic pages are images, so their font can't be changed. Pinch outward on a page to zoom in; pinch back in (or double-tap) to return to page turning."}</Text>}
       </ScrollView>
     </Sheet>
   );

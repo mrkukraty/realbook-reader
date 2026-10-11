@@ -9,8 +9,13 @@ import { pageCacheFile } from '../platform/files';
 export interface PdfOutlineItem { title: string; page: number; children: PdfOutlineItem[] }
 export interface PdfOpened { pageCount: number; aspect: number; toc: PdfOutlineItem[] }
 
+/** Theme colours to paint the page with (paper / ink); null keeps the PDF's own colours. */
+export interface PageTint { bg: string; fg: string }
+
 export interface PdfRendererHandle {
-  getPageUri(page: number, width: number): Promise<string>;
+  getPageUri(page: number, width: number, tint?: PageTint | null): Promise<string>;
+  /** The page's text rebuilt as simple HTML paragraphs, for the text view. '' if the page has no text. */
+  getHtml(page: number): Promise<string>;
   getText(page: number): Promise<string>;
 }
 
@@ -23,11 +28,21 @@ interface Props {
 
 const CHUNK = 512 * 1024;
 
+const rgb = (hex: string): [number, number, number] => {
+  const h = hex.replace('#', '');
+  const v = h.length === 3 ? h.split('').map((c) => c + c).join('') : h.slice(0, 6);
+  const n = parseInt(v, 16) || 0;
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
+const tintTag = (t: PageTint) => `${t.bg}${t.fg}`.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+
 export const PdfRenderer = forwardRef<PdfRendererHandle, Props>(function PdfRenderer({ bookId, file, onOpened, onError }, ref) {
   const web = useRef<WebView>(null);
   const html = useMemo(() => buildPdfRendererHtml(), []);
   const pagePending = useRef(new Map<string, { resolve(u: string): void; reject(e: Error): void }[]>());
   const textPending = useRef(new Map<number, ((t: string) => void)[]>());
+  const htmlPending = useRef(new Map<number, ((t: string) => void)[]>());
+  const htmlCache = useRef(new Map<number, string>());
   const opened = useRef(false);
   const waiters = useRef<(() => void)[]>([]);
 
@@ -35,17 +50,29 @@ export const PdfRenderer = forwardRef<PdfRendererHandle, Props>(function PdfRend
   const whenOpen = () => (opened.current ? Promise.resolve() : new Promise<void>((r) => waiters.current.push(r)));
 
   useImperativeHandle(ref, () => ({
-    async getPageUri(page, width) {
+    async getPageUri(page, width, tint) {
       const w = Math.max(200, Math.min(2400, Math.round(width)));
-      const f = pageCacheFile(bookId, page, w);
+      const tag = tint ? tintTag(tint) : '';
+      const f = pageCacheFile(bookId, page, w, tag);
       if (f.exists) return f.uri;
       await whenOpen();
-      const key = `${page}:${w}`;
+      const key = `${page}:${w}:${tag}`;
       return new Promise<string>((resolve, reject) => {
         const list = pagePending.current.get(key);
         if (list) { list.push({ resolve, reject }); return; }
         pagePending.current.set(key, [{ resolve, reject }]);
-        send({ type: 'render', page, width: w, quality: 0.85 });
+        send({ type: 'render', page, width: w, quality: 0.85, tint: tint ? { bg: rgb(tint.bg), fg: rgb(tint.fg), tag } : null });
+      });
+    },
+    async getHtml(page) {
+      const hit = htmlCache.current.get(page);
+      if (hit !== undefined) return hit;
+      await whenOpen();
+      return new Promise<string>((resolve) => {
+        const list = htmlPending.current.get(page);
+        if (list) { list.push(resolve); return; }
+        htmlPending.current.set(page, [resolve]);
+        send({ type: 'html', page });
       });
     },
     async getText(page) {
@@ -90,12 +117,13 @@ export const PdfRenderer = forwardRef<PdfRendererHandle, Props>(function PdfRend
       case 'page': {
         const page = Number(m.page);
         const w = Number(m.width);
-        const key = `${page}:${w}`;
+        const tag = String(m.tag ?? '');
+        const key = `${page}:${w}:${tag}`;
         const list = pagePending.current.get(key) ?? [];
         pagePending.current.delete(key);
         try {
           const data = String(m.data);
-          const f = pageCacheFile(bookId, page, w);
+          const f = pageCacheFile(bookId, page, w, tag);
           f.write(data.slice(data.indexOf(',') + 1), { encoding: 'base64' });
           list.forEach((l) => l.resolve(f.uri));
         } catch (e) {
@@ -108,6 +136,15 @@ export const PdfRenderer = forwardRef<PdfRendererHandle, Props>(function PdfRend
         for (const [k, list] of pagePending.current) {
           if (k.startsWith(`${page}:`)) { pagePending.current.delete(k); list.forEach((l) => l.reject(new Error(String(m.msg)))); }
         }
+        return;
+      }
+      case 'html': {
+        const page = Number(m.page);
+        const html = String(m.html ?? '');
+        htmlCache.current.set(page, html);
+        const list = htmlPending.current.get(page) ?? [];
+        htmlPending.current.delete(page);
+        list.forEach((r) => r(html));
         return;
       }
       case 'text': {

@@ -24,7 +24,7 @@ html,body{margin:0;padding:0;background:${page};overflow:hidden;width:${g.width}
  column-width:${colW}px;column-gap:${2 * g.padX}px;column-fill:auto;will-change:transform;
  color:${text};font-family:${FONT_STACKS[s.fontFamily].css};font-size:${s.fontSize}px;line-height:${s.lineHeight};
  text-align:${s.align};hyphens:auto;-webkit-hyphens:auto;word-wrap:break-word;overflow-wrap:break-word;}
-#c p{margin:0 0 .2em 0;text-indent:1.4em;orphans:2;widows:2;}
+#c p{margin:0 0 ${s.paraSpacing}em 0;text-indent:1.4em;orphans:2;widows:2;}
 #c h1,#c h2,#c h3,#c h4{text-indent:0;text-align:center;line-height:1.25;margin:1.2em 0 .8em;break-after:avoid;font-weight:600;}
 #c h1{font-size:1.6em}#c h2{font-size:1.35em}#c h3{font-size:1.15em}#c h4{font-size:1em}
 #c img{max-width:100%;max-height:${g.height - 2 * g.padY - 8}px;height:auto;display:block;margin:.6em auto;break-inside:avoid;object-fit:contain;}
@@ -92,6 +92,11 @@ document.addEventListener('touchmove',function(e){if(e.touches.length!==1)return
 document.addEventListener('touchend',function(e){var t=e.changedTouches[0];if(drag){drag=false;post({type:'dragEnd',dx:t.clientX-sx,vx:vx});return;}
  var s=window.getSelection();if(!moved&&Date.now()-st<350&&(!s||s.isCollapsed)){var tg=e.target;if(tg.closest&&(tg.closest('a')||tg.closest('mark[data-h]')))return;post({type:'tap',x:t.clientX/G.width,y:t.clientY/G.height});}},{passive:true});
 document.addEventListener('touchcancel',function(){if(drag){drag=false;post({type:'dragEnd',dx:0,vx:0});}},{passive:true});
+// two-finger pinch: reported once on release so RN can change the font size
+var pd0=0,pr=1;function pdist(ts){var a=ts[0],b=ts[1];return Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);}
+document.addEventListener('touchstart',function(e){if(e.touches.length===2){pd0=pdist(e.touches);pr=1;if(drag){drag=false;post({type:'dragEnd',dx:0,vx:0});}moved=true;}},{passive:true});
+document.addEventListener('touchmove',function(e){if(pd0&&e.touches.length===2){e.preventDefault();pr=pdist(e.touches)/pd0;}},{passive:false});
+document.addEventListener('touchend',function(e){if(pd0&&e.touches.length<2){if(Math.abs(pr-1)>0.08)post({type:'pinch',scale:pr});pd0=0;pr=1;}},{passive:true});
 function go(p){measure();
  if(p&&typeof p==='object'){if(p.anchor){window.RB.gotoAnchor(p.anchor);}else if(typeof p.offset==='number'){window.RB.gotoOffset(p.offset);}else if(typeof p.fraction==='number'){window.RB.gotoFraction(p.fraction);}else show(p.page===undefined?0:p.page);}else show(0);}
 window.RB.go=go;
