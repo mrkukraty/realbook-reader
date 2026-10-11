@@ -1,0 +1,677 @@
+diff --git a/mobile/.env.example b/mobile/.env.example
+new file mode 100644
+index 0000000..00a119e
+--- /dev/null
++++ b/mobile/.env.example
+@@ -0,0 +1,4 @@
++# Optional: accounts and book sync (see supabase/schema.sql). Copy to .env and fill in.
++# Both values are public by design; access is limited by the rules in schema.sql.
++EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
++EXPO_PUBLIC_SUPABASE_KEY=your-publishable-or-anon-key
+diff --git a/mobile/__tests__/cloud-sync.test.ts b/mobile/__tests__/cloud-sync.test.ts
+new file mode 100644
+index 0000000..53eba6f
+--- /dev/null
++++ b/mobile/__tests__/cloud-sync.test.ts
+@@ -0,0 +1,70 @@
++/// <reference types="jest" />
++import { MAX_UPLOAD_BYTES, authMessage, cloudProgress, localProgress, planSync, storagePath, toCloudRow, type CloudBook } from '../src/cloud/sync-logic';
++import type { BookRecord, ProgressRecord } from '../src/storage/types';
++
++const book = (id: string, hash: string, over: Partial<BookRecord> = {}): BookRecord => ({
++  id, hash, fileName: `${id}.epub`, format: 'epub', size: 1000, metadata: { title: `Title ${id}`, author: 'A. Writer' },
++  favorite: false, collectionIds: [], addedAt: 100, ...over,
++});
++const row = (hash: string, over: Partial<CloudBook> = {}): CloudBook => ({
++  hash, file_name: `${hash}.epub`, format: 'epub', size: 1000, title: `Cloud ${hash}`, author: '', added_at: 100, progress: null, progress_at: 0, ...over,
++});
++const prog = (bookId: string, updatedAt: number, fraction = 0.5): ProgressRecord => ({ bookId, section: 3, sectionFraction: 0.25, fraction, updatedAt });
++
++describe('account sync plan', () => {
++  it('uploads what is only here and lists what is only in the account', () => {
++    const plan = planSync([book('a', 'h1'), book('b', 'h2')], {}, [row('h2'), row('h3')]);
++    expect(plan.upload.map((b) => b.id)).toEqual(['a']);
++    expect(plan.remoteOnly.map((r) => r.hash)).toEqual(['h3']);
++    expect(plan.tooLarge).toEqual([]);
++  });
++
++  it('keeps over-size and removed-from-account books on the device only', () => {
++    const plan = planSync([book('a', 'h1', { size: MAX_UPLOAD_BYTES + 1 }), book('b', 'h2'), book('c', 'h3')], {}, [], ['h2']);
++    expect(plan.tooLarge.map((b) => b.id)).toEqual(['a']);
++    expect(plan.upload.map((b) => b.id)).toEqual(['c']);
++  });
++
++  it('sends the newer reading position in whichever direction it is newer', () => {
++    const local = [book('a', 'h1'), book('b', 'h2'), book('c', 'h3'), book('d', 'h4')];
++    const progress = { a: prog('a', 50_000), b: prog('b', 10_000), c: prog('c', 30_000) };
++    const remote = [
++      row('h1', { progress: { fraction: 0.1 }, progress_at: 20_000 }), // older in the account -> push
++      row('h2', { progress: { fraction: 0.9 }, progress_at: 40_000 }), // newer in the account -> pull
++      row('h3', { progress: { fraction: 0.5 }, progress_at: 30_500 }), // within clock skew -> leave
++      row('h4', { progress: { fraction: 0.7 }, progress_at: 5_000 }),  // never opened here -> pull
++    ];
++    const plan = planSync(local, progress, remote);
++    expect(plan.pushProgress.map((p) => p.hash)).toEqual(['h1']);
++    expect(plan.pullProgress.map((p) => p.bookId)).toEqual(['b', 'd']);
++    expect(plan.upload).toEqual([]);
++  });
++
++  it('round-trips a reading position through the account', () => {
++    const b = book('a', 'h1');
++    const r = toCloudRow(b, prog('a', 777, 0.42));
++    expect(r).toMatchObject({ hash: 'h1', file_name: 'a.epub', title: 'Title a', author: 'A. Writer', progress_at: 777 });
++    expect(r.progress).toEqual({ section: 3, sectionFraction: 0.25, fraction: 0.42 });
++    expect(cloudProgress(prog('a', 1))).not.toHaveProperty('bookId');
++    // on another device the same book has another local id
++    expect(localProgress('other-id', r)).toEqual({ bookId: 'other-id', section: 3, sectionFraction: 0.25, fraction: 0.42, updatedAt: 777 });
++    expect(localProgress('x', row('h', { progress: null }))).toBeNull();
++    expect(localProgress('x', row('h', { progress: { fraction: Number.NaN } }))).toBeNull();
++    expect(toCloudRow(b, undefined)).toMatchObject({ progress: null, progress_at: 0 });
++  });
++
++  it('stores each file under its owner, with a safe extension', () => {
++    expect(storagePath('user-1', 'abc', 'My Book.EPUB')).toBe('user-1/abc.epub');
++    expect(storagePath('user-1', 'abc', 'novel.fb2.zip')).toBe('user-1/abc.fb2.zip');
++    expect(storagePath('user-1', 'abc', 'noextension')).toBe('user-1/abc.bin');
++    expect(storagePath('user-1', 'abc', 'x.p/../d f')).toBe('user-1/abc.df');
++  });
++
++  it('explains sign-in errors in plain words', () => {
++    expect(authMessage('Invalid login credentials')).toBe('Wrong email or password.');
++    expect(authMessage('User already registered')).toMatch(/already has an account/);
++    expect(authMessage('Email not confirmed')).toMatch(/confirmation link/);
++    expect(authMessage('Network request failed')).toMatch(/No connection/);
++    expect(authMessage('Something else')).toBe('Something else');
++  });
++});
+diff --git a/mobile/package.json b/mobile/package.json
+index 874a1f4..1898daf 100644
+--- a/mobile/package.json
++++ b/mobile/package.json
+@@ -4,6 +4,7 @@
+   "main": "expo-router/entry",
+   "dependencies": {
+     "@expo/vector-icons": "^15.0.2",
++    "@supabase/supabase-js": "^2.117.3",
+     "domhandler": "^6.0.1",
+     "expo": "~57.0.27",
+     "expo-clipboard": "~57.0.2",
+diff --git a/mobile/src/app/_layout.tsx b/mobile/src/app/_layout.tsx
+index 588ff75..af7f92d 100644
+--- a/mobile/src/app/_layout.tsx
++++ b/mobile/src/app/_layout.tsx
+@@ -6,6 +6,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
+ import * as SplashScreen from 'expo-splash-screen';
+ import { useSettings } from '@/state/settings-store';
+ import { useLibrary } from '@/state/library-store';
++import { useAccount } from '@/state/account-store';
+ import { useAppTheme } from '@/components/ui';
+ 
+ void SplashScreen.preventAutoHideAsync().catch(() => {});
+@@ -18,7 +19,7 @@ export default function RootLayout() {
+ 
+   useEffect(() => {
+     void loadSettings();
+-    void loadLibrary();
++    void loadLibrary().then(() => useAccount.getState().init());
+   }, [loadSettings, loadLibrary]);
+   useEffect(() => {
+     if (settingsLoaded) void SplashScreen.hideAsync().catch(() => {});
+@@ -40,6 +41,7 @@ export default function RootLayout() {
+           <Stack.Screen name="index" options={{ title: 'Library' }} />
+           <Stack.Screen name="book/[id]" options={{ title: 'Book details' }} />
+           <Stack.Screen name="settings" options={{ title: 'Settings' }} />
++          <Stack.Screen name="account" options={{ title: 'Account' }} />
+           <Stack.Screen name="reader/[id]" options={{ headerShown: false, animation: 'fade' }} />
+         </Stack>
+       </SafeAreaProvider>
+diff --git a/mobile/src/app/account.tsx b/mobile/src/app/account.tsx
+new file mode 100644
+index 0000000..46a7f85
+--- /dev/null
++++ b/mobile/src/app/account.tsx
+@@ -0,0 +1,114 @@
++import React, { useState } from 'react';
++import { ActivityIndicator, Alert, ScrollView, Text, TextInput, View } from 'react-native';
++import { Stack } from 'expo-router';
++import { Btn, Card, IconBtn, SectionTitle, useAppTheme } from '@/components/ui';
++import { useAccount } from '@/state/account-store';
++import { useLibrary } from '@/state/library-store';
++import { formatBytes } from '@/storage/library-logic';
++
++export default function AccountScreen() {
++  const t = useAppTheme();
++  const a = useAccount();
++  const books = useLibrary((x) => x.books);
++  const [email, setEmail] = useState('');
++  const [password, setPassword] = useState('');
++  const onDevice = new Set(books.map((b) => b.hash));
++  const missing = a.cloud.filter((r) => !onDevice.has(r.hash));
++
++  const input = { borderWidth: 1, borderColor: t.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, color: t.chromeText, backgroundColor: t.chrome, fontSize: 16, marginBottom: 10 } as const;
++
++  return (
++    <ScrollView style={{ backgroundColor: t.chrome }} contentContainerStyle={{ padding: 16, paddingBottom: 60 }} keyboardShouldPersistTaps="handled">
++      <Stack.Screen options={{ title: 'Account' }} />
++
++      {!a.configured ? (
++        <Card>
++          <Text style={{ color: t.chromeText, fontWeight: '600', marginBottom: 6 }}>Accounts are not set up in this build</Text>
++          <Text style={{ color: t.muted, lineHeight: 20 }}>Your books are stored only on this device. Signing in to reach them from other devices needs the app to be built with an account server.</Text>
++        </Card>
++      ) : !a.ready ? <ActivityIndicator color={t.accent} style={{ marginTop: 40 }} /> : !a.user ? (
++        <>
++          <SectionTitle>Sign in</SectionTitle>
++          <Card>
++            <Text style={{ color: t.muted, lineHeight: 20, marginBottom: 12 }}>Sign in to keep your books in your own private account and open them on any phone or tablet. Without an account everything stays on this device.</Text>
++            <TextInput value={email} onChangeText={setEmail} placeholder="Email" placeholderTextColor={t.muted} style={input}
++              autoCapitalize="none" autoCorrect={false} keyboardType="email-address" textContentType="emailAddress" autoComplete="email" accessibilityLabel="Email" />
++            <TextInput value={password} onChangeText={setPassword} placeholder="Password (at least 6 characters)" placeholderTextColor={t.muted} style={input}
++              secureTextEntry autoCapitalize="none" autoCorrect={false} textContentType="password" autoComplete="password" accessibilityLabel="Password" />
++            {a.error ? <Text style={{ color: '#c0392b', marginBottom: 10 }} accessibilityRole="alert">{a.error}</Text> : null}
++            {a.notice ? <Text style={{ color: t.accent, marginBottom: 10 }}>{a.notice}</Text> : null}
++            <Btn title={a.busy ?? 'Sign in'} icon="log-in-outline" disabled={!!a.busy} onPress={() => { void a.signIn(email, password); }} />
++            <Btn title="Create a new account" kind="secondary" icon="person-add-outline" disabled={!!a.busy} style={{ marginTop: 10 }} onPress={() => { void a.signUp(email, password); }} />
++          </Card>
++        </>
++      ) : (
++        <>
++          <SectionTitle>Signed in</SectionTitle>
++          <Card>
++            <Text style={{ color: t.chromeText, fontWeight: '600' }}>{a.user.email}</Text>
++            <Text style={{ color: t.muted, marginTop: 4, lineHeight: 19 }}>
++              {a.busy ?? (a.lastSync ? `${a.cloud.length} book${a.cloud.length === 1 ? '' : 's'} in your account · synced ${new Date(a.lastSync).toLocaleTimeString()}` : 'Not synced yet')}
++            </Text>
++            {a.error ? <Text style={{ color: '#c0392b', marginTop: 8 }} accessibilityRole="alert">{a.error}</Text> : null}
++            <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
++              <Btn title="Sync now" icon="sync-outline" disabled={!!a.busy} style={{ flex: 1 }} onPress={() => { void a.sync(); }} />
++              <Btn title="Sign out" kind="ghost" icon="log-out-outline" style={{ flex: 1 }} onPress={() => Alert.alert('Sign out?', 'The books on this device stay here. Books in your account stay there too.', [
++                { text: 'Cancel', style: 'cancel' }, { text: 'Sign out', onPress: () => { void a.signOut(); } },
++              ])} />
++            </View>
++            <Text style={{ color: t.muted, fontSize: 12, lineHeight: 17, marginTop: 10 }}>Books you add on this device are copied to your account automatically, with your reading position. Only you can see them. Bookmarks, highlights and notes stay on each device.</Text>
++          </Card>
++
++          {missing.length ? (
++            <>
++              <SectionTitle>In your account, not on this device</SectionTitle>
++              <Card>
++                {missing.length > 1 ? <Btn title={`Download all ${missing.length}`} kind="secondary" icon="cloud-download-outline" style={{ marginBottom: 8 }} onPress={() => { void (async () => { for (const r of missing) await a.download(r.hash); })(); }} /> : null}
++                {missing.map((r) => (
++                  <BookRow key={r.hash} title={r.title || r.file_name} sub={`${r.author ? `${r.author} · ` : ''}${r.format.toUpperCase()} · ${formatBytes(r.size)}`}>
++                    {a.downloading.includes(r.hash) ? <ActivityIndicator color={t.accent} style={{ marginHorizontal: 12 }} /> : <IconBtn icon="cloud-download-outline" label={`Download ${r.title || r.file_name}`} onPress={() => { void a.download(r.hash); }} />}
++                    <IconBtn icon="trash-outline" label={`Remove ${r.title || r.file_name} from your account`} onPress={() => confirmRemove(r.title || r.file_name, false, () => { void a.removeFromAccount(r.hash); })} />
++                  </BookRow>
++                ))}
++              </Card>
++            </>
++          ) : null}
++
++          {a.cloud.length > missing.length ? (
++            <>
++              <SectionTitle>In your account and on this device</SectionTitle>
++              <Card>
++                {a.cloud.filter((r) => onDevice.has(r.hash)).map((r) => (
++                  <BookRow key={r.hash} title={r.title || r.file_name} sub={`${r.author ? `${r.author} · ` : ''}${r.format.toUpperCase()} · ${formatBytes(r.size)}`}>
++                    <IconBtn icon="trash-outline" label={`Remove ${r.title || r.file_name} from your account`} onPress={() => confirmRemove(r.title || r.file_name, true, () => { void a.removeFromAccount(r.hash); })} />
++                  </BookRow>
++                ))}
++              </Card>
++            </>
++          ) : null}
++        </>
++      )}
++    </ScrollView>
++  );
++}
++
++function confirmRemove(title: string, onDevice: boolean, go: () => void) {
++  Alert.alert('Remove from your account?', onDevice
++    ? `"${title}" stays on this device but will no longer be available on your other devices.`
++    : `"${title}" is not on this device. Removing it from your account deletes your only copy here; it cannot be undone.`, [
++    { text: 'Cancel', style: 'cancel' }, { text: 'Remove', style: 'destructive', onPress: go },
++  ]);
++}
++
++function BookRow({ title, sub, children }: { title: string; sub: string; children: React.ReactNode }) {
++  const t = useAppTheme();
++  return (
++    <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6 }}>
++      <View style={{ flex: 1 }}>
++        <Text style={{ color: t.chromeText, fontSize: 15 }} numberOfLines={1}>{title}</Text>
++        <Text style={{ color: t.muted, fontSize: 12 }} numberOfLines={1}>{sub}</Text>
++      </View>
++      {children}
++    </View>
++  );
++}
+diff --git a/mobile/src/app/index.tsx b/mobile/src/app/index.tsx
+index 8d1047a..4a3069d 100644
+--- a/mobile/src/app/index.tsx
++++ b/mobile/src/app/index.tsx
+@@ -158,6 +158,7 @@ export default function LibraryScreen() {
+         headerRight: () => (
+           <View style={{ flexDirection: 'row' }}>
+             <IconBtn icon="add-circle-outline" label="Import books" onPress={doImport} />
++            <IconBtn icon="person-circle-outline" label="Account" onPress={() => router.push('/account')} />
+             <IconBtn icon="settings-outline" label="Settings" onPress={() => router.push('/settings')} />
+           </View>
+         ),
+diff --git a/mobile/src/app/settings.tsx b/mobile/src/app/settings.tsx
+index 907f84c..8e49029 100644
+--- a/mobile/src/app/settings.tsx
++++ b/mobile/src/app/settings.tsx
+@@ -73,7 +73,7 @@ export default function SettingsScreen() {
+         <Text style={{ color: t.chromeText }}>{`${books.length} book${books.length === 1 ? '' : 's'} Â· ${formatBytes(usage.books)} stored in the app`}</Text>
+         <Text style={{ color: t.chromeText, marginTop: 4 }}>{`Rendered page cache: ${formatBytes(usage.cache)}`}</Text>
+         {usage.free !== null ? <Text style={{ color: t.muted, marginTop: 4 }}>{`Free on device: ${formatBytes(usage.free)}${usage.total ? ` of ${formatBytes(usage.total)}` : ''}`}</Text> : null}
+-        <Text style={{ color: t.muted, marginTop: 6, fontSize: 12 }}>All books, progress, bookmarks and notes are stored only on this device. Nothing is uploaded.</Text>
++        <Text style={{ color: t.muted, marginTop: 6, fontSize: 12 }}>Books, progress, bookmarks and notes are stored on this device. Nothing is uploaded unless you sign in to an account, which copies your books and reading positions to your private space.</Text>
+         <Btn title="Clear page cache" kind="secondary" icon="trash-bin-outline" style={{ marginTop: 10 }} onPress={() => {
+           Alert.alert('Clear page cache?', 'Deletes rendered PDF pages and extracted comic images. They are re-created when you read. Your books are not affected.', [
+             { text: 'Cancel', style: 'cancel' },
+diff --git a/mobile/src/cloud/client.ts b/mobile/src/cloud/client.ts
+new file mode 100644
+index 0000000..bf5181f
+--- /dev/null
++++ b/mobile/src/cloud/client.ts
+@@ -0,0 +1,31 @@
++// The account server (Supabase: sign-in, a table of each person's books, and private file storage).
++// The address and the public key come from EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_KEY; without them
++// the app works exactly as before, fully offline, and the account screen says sync is not set up.
++import { createClient, type SupabaseClient } from '@supabase/supabase-js';
++import { getRepo } from '../state/repo';
++
++const URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
++const KEY = process.env.EXPO_PUBLIC_SUPABASE_KEY ?? '';
++
++export const cloudConfigured = /^https:\/\/.+/.test(URL) && KEY.length > 20;
++export const BUCKET = 'books';
++
++// The session is kept in the app's own database, next to the library.
++const storage = {
++  async getItem(key: string): Promise<string | null> {
++    return (await (await getRepo()).getKV(`auth:${key}`)) || null;
++  },
++  async setItem(key: string, value: string): Promise<void> {
++    await (await getRepo()).setKV(`auth:${key}`, value);
++  },
++  async removeItem(key: string): Promise<void> {
++    await (await getRepo()).setKV(`auth:${key}`, '');
++  },
++};
++
++let client: SupabaseClient | null = null;
++export function cloud(): SupabaseClient {
++  if (!cloudConfigured) throw new Error('Account sync is not set up in this build.');
++  client ??= createClient(URL, KEY, { auth: { storage, autoRefreshToken: true, persistSession: true, detectSessionInUrl: false } });
++  return client;
++}
+diff --git a/mobile/src/cloud/sync-logic.ts b/mobile/src/cloud/sync-logic.ts
+new file mode 100644
+index 0000000..a816f54
+--- /dev/null
++++ b/mobile/src/cloud/sync-logic.ts
+@@ -0,0 +1,96 @@
++// Account sync decisions (pure, unit-tested). A book is the same book on every device when its file hash is
++// the same, so the cloud copy is keyed by hash; each device keeps its own local id.
++import type { BookRecord, ProgressRecord } from '../storage/types';
++
++/** One row of the `books` table: a book stored in the signed-in person's account. */
++export interface CloudBook {
++  hash: string;
++  file_name: string;
++  format: string;
++  size: number;
++  title: string;
++  author: string;
++  added_at: number;
++  /** reading position, device-independent (see ProgressRecord) */
++  progress: CloudProgress | null;
++  progress_at: number;
++}
++export type CloudProgress = Omit<ProgressRecord, 'bookId' | 'updatedAt'>;
++
++/** The free storage tier refuses larger files. */
++export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
++
++/** `<user>/<hash>.<ext>` inside the private bucket; the first folder is what the access rules check. */
++export function storagePath(userId: string, hash: string, fileName: string): string {
++  const lower = fileName.toLowerCase();
++  const ext = (lower.endsWith('.fb2.zip') ? 'fb2.zip' : lower.includes('.') ? lower.split('.').pop() ?? '' : '').replace(/[^a-z0-9.]/g, '') || 'bin';
++  return `${userId}/${hash}.${ext}`;
++}
++
++export function toCloudRow(b: BookRecord, p: ProgressRecord | undefined): CloudBook {
++  return {
++    hash: b.hash, file_name: b.fileName, format: b.format, size: b.size,
++    title: b.metadata.title, author: b.metadata.author ?? '', added_at: b.addedAt,
++    progress: p ? cloudProgress(p) : null, progress_at: p?.updatedAt ?? 0,
++  };
++}
++
++export function cloudProgress(p: ProgressRecord): CloudProgress {
++  const { bookId: _b, updatedAt: _u, ...rest } = p;
++  return rest;
++}
++
++export interface SyncPlan {
++  /** on this device, not in the account yet */
++  upload: BookRecord[];
++  /** too large for the account's storage */
++  tooLarge: BookRecord[];
++  /** in the account, not on this device */
++  remoteOnly: CloudBook[];
++  /** reading position is newer here: send it */
++  pushProgress: { hash: string; progress: ProgressRecord }[];
++  /** reading position is newer in the account: apply it here */
++  pullProgress: { bookId: string; row: CloudBook }[];
++}
++
++// clocks of two devices differ a little; ignore differences smaller than this
++const SKEW_MS = 2000;
++
++export function planSync(local: BookRecord[], progress: Record<string, ProgressRecord>, remote: CloudBook[], excluded: string[] = []): SyncPlan {
++  const remoteBy = new Map(remote.map((r) => [r.hash, r]));
++  const localHashes = new Set(local.map((b) => b.hash));
++  const plan: SyncPlan = { upload: [], tooLarge: [], remoteOnly: remote.filter((r) => !localHashes.has(r.hash)), pushProgress: [], pullProgress: [] };
++  for (const b of local) {
++    const row = remoteBy.get(b.hash);
++    if (!row) {
++      if (excluded.includes(b.hash)) continue;
++      if (b.size > MAX_UPLOAD_BYTES) plan.tooLarge.push(b); else plan.upload.push(b);
++      continue;
++    }
++    const p = progress[b.id];
++    const at = p?.updatedAt ?? 0;
++    if (p && at > row.progress_at + SKEW_MS) plan.pushProgress.push({ hash: b.hash, progress: p });
++    else if (row.progress && row.progress_at > at + SKEW_MS) plan.pullProgress.push({ bookId: b.id, row });
++  }
++  return plan;
++}
++
++/** The local progress record for a position stored in the account. */
++export function localProgress(bookId: string, row: CloudBook): ProgressRecord | null {
++  const p = row.progress;
++  if (!p || typeof p.fraction !== 'number' || !Number.isFinite(p.fraction)) return null;
++  return { ...p, bookId, updatedAt: row.progress_at };
++}
++
++/** Sign-in errors in plain words. */
++export function authMessage(raw: string): string {
++  const m = raw.toLowerCase();
++  if (m.includes('invalid login')) return 'Wrong email or password.';
++  if (m.includes('already registered') || m.includes('already been registered')) return 'This email already has an account. Sign in instead.';
++  if (m.includes('not confirmed')) return 'Open the confirmation link sent to your email, then sign in.';
++  if (m.includes('password') && (m.includes('least') || m.includes('weak') || m.includes('short'))) return 'Choose a longer password (at least 6 characters).';
++  if (m.includes('valid email') || m.includes('invalid email') || m.includes('invalid format')) return 'Enter a valid email address.';
++  if (m.includes('rate limit') || m.includes('too many')) return 'Too many attempts. Wait a minute and try again.';
++  if (m.includes('network') || m.includes('fetch')) return 'No connection to the server. Check the internet and try again.';
++  return raw;
++}
+diff --git a/mobile/src/state/account-store.ts b/mobile/src/state/account-store.ts
+new file mode 100644
+index 0000000..3d82838
+--- /dev/null
++++ b/mobile/src/state/account-store.ts
+@@ -0,0 +1,203 @@
++// The signed-in account and book sync. Signing in is optional: without it nothing leaves the device. With it,
++// the books added on this device are copied to the person's private space, and the books in that space can be
++// downloaded on any other device they sign in on. Reading positions travel with the books.
++import { create } from 'zustand';
++import { AppState } from 'react-native';
++import { File, Paths } from 'expo-file-system';
++import { BUCKET, cloud, cloudConfigured } from '../cloud/client';
++import { authMessage, cloudProgress, localProgress, planSync, storagePath, toCloudRow, type CloudBook } from '../cloud/sync-logic';
++import { importMany } from '../import/importer';
++import { fileStore, originalFile, sha256Hex } from '../platform/files';
++import { getRepo } from './repo';
++import { useLibrary } from './library-store';
++
++interface AccountState {
++  configured: boolean;
++  /** false until the saved session has been looked up */
++  ready: boolean;
++  user: { id: string; email: string } | null;
++  /** the books in the account, as of the last sync */
++  cloud: CloudBook[];
++  /** what sync is doing right now, or null */
++  busy: string | null;
++  /** hashes being downloaded */
++  downloading: string[];
++  error: string | null;
++  notice: string | null;
++  lastSync: number | null;
++  init(): void;
++  signIn(email: string, password: string): Promise<boolean>;
++  signUp(email: string, password: string): Promise<boolean>;
++  signOut(): Promise<void>;
++  sync(): Promise<void>;
++  download(hash: string): Promise<void>;
++  removeFromAccount(hash: string): Promise<void>;
++}
++
++const COLUMNS = 'hash,file_name,format,size,title,author,added_at,progress,progress_at';
++const msg = (e: unknown) => (e instanceof Error ? e.message : typeof e === 'object' && e && 'message' in e ? String((e as { message: unknown }).message) : String(e));
++
++async function excludedHashes(): Promise<string[]> {
++  try { const v = JSON.parse((await (await getRepo()).getKV('cloudExcluded')) || '[]') as unknown; return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []; } catch { return []; }
++}
++
++let started = false;
++let syncTimer: ReturnType<typeof setTimeout> | null = null;
++
++export const useAccount = create<AccountState>((set, get) => {
++  const later = (ms: number) => {
++    if (syncTimer) clearTimeout(syncTimer);
++    syncTimer = setTimeout(() => { void get().sync(); }, ms);
++  };
++  const credentials = (email: string, password: string) => {
++    const e = email.trim();
++    if (!/^\S+@\S+\.\S+$/.test(e)) { set({ error: 'Enter a valid email address.' }); return null; }
++    if (password.length < 6) { set({ error: 'The password needs at least 6 characters.' }); return null; }
++    return { email: e, password };
++  };
++
++  return {
++    configured: cloudConfigured, ready: !cloudConfigured, user: null, cloud: [], busy: null, downloading: [], error: null, notice: null, lastSync: null,
++
++    init() {
++      if (started || !cloudConfigured) return;
++      started = true;
++      const c = cloud();
++      c.auth.onAuthStateChange((_event, session) => {
++        const was = get().user?.id;
++        const user = session?.user ? { id: session.user.id, email: session.user.email ?? '' } : null;
++        set({ user, ready: true, ...(user ? {} : { cloud: [], lastSync: null }) });
++        if (user && user.id !== was) later(300);
++      });
++      void c.auth.getSession().then(() => set({ ready: true })).catch(() => set({ ready: true }));
++      // keep the session fresh only while the app is in use
++      AppState.addEventListener('change', (s) => { if (s === 'active') void c.auth.startAutoRefresh(); else void c.auth.stopAutoRefresh(); });
++      // a newly added book goes to the account by itself
++      useLibrary.subscribe((s, prev) => { if (get().user && s.books.length > prev.books.length && !get().downloading.length) later(1500); });
++    },
++
++    async signIn(email, password) {
++      const cr = credentials(email, password);
++      if (!cr) return false;
++      set({ error: null, notice: null, busy: 'Signing in…' });
++      try {
++        const { error } = await cloud().auth.signInWithPassword(cr);
++        if (error) { set({ error: authMessage(error.message) }); return false; }
++        return true;
++      } catch (e) { set({ error: authMessage(msg(e)) }); return false; } finally { set({ busy: null }); }
++    },
++
++    async signUp(email, password) {
++      const cr = credentials(email, password);
++      if (!cr) return false;
++      set({ error: null, notice: null, busy: 'Creating your account…' });
++      try {
++        const { data, error } = await cloud().auth.signUp(cr);
++        if (error) { set({ error: authMessage(error.message) }); return false; }
++        // with email confirmation on, there is no session until the link in the email is opened
++        if (!data.session) set({ notice: `We sent a confirmation link to ${cr.email}. Open it, then sign in here.` });
++        return true;
++      } catch (e) { set({ error: authMessage(msg(e)) }); return false; } finally { set({ busy: null }); }
++    },
++
++    async signOut() {
++      set({ error: null, notice: null });
++      try { await cloud().auth.signOut(); } catch { /* the local session is dropped either way */ }
++      set({ user: null, cloud: [], lastSync: null });
++    },
++
++    async sync() {
++      const user = get().user;
++      if (!user || get().busy) return;
++      set({ busy: 'Checking your account…', error: null });
++      try {
++        const c = cloud();
++        const { data, error } = await c.from('books').select(COLUMNS).order('added_at', { ascending: false });
++        if (error) throw error;
++        let rows = (data ?? []) as unknown as CloudBook[];
++        const lib = useLibrary.getState();
++        const plan = planSync(lib.books, lib.progress, rows, await excludedHashes());
++        const failed: string[] = [];
++
++        for (let i = 0; i < plan.upload.length; i++) {
++          const b = plan.upload[i];
++          set({ busy: `Uploading ${i + 1} of ${plan.upload.length}: ${b.metadata.title}` });
++          try {
++            const bytes = await originalFile(b.id, b.fileName).bytes();
++            const up = await c.storage.from(BUCKET).upload(storagePath(user.id, b.hash, b.fileName), bytes, { contentType: 'application/octet-stream', upsert: true });
++            if (up.error) throw up.error;
++            const row = toCloudRow(b, useLibrary.getState().progress[b.id]);
++            const ins = await c.from('books').upsert({ ...row, user_id: user.id });
++            if (ins.error) throw ins.error;
++            rows = [row, ...rows];
++            set({ cloud: rows });
++          } catch (e) { failed.push(`${b.metadata.title} (${msg(e)})`); }
++        }
++
++        set({ busy: 'Syncing reading positions…' });
++        for (const p of plan.pushProgress) {
++          const r = await c.from('books').update({ progress: cloudProgress(p.progress), progress_at: p.progress.updatedAt }).eq('user_id', user.id).eq('hash', p.hash);
++          if (!r.error) rows = rows.map((x) => (x.hash === p.hash ? { ...x, progress: cloudProgress(p.progress), progress_at: p.progress.updatedAt } : x));
++        }
++        for (const p of plan.pullProgress) {
++          const rec = localProgress(p.bookId, p.row);
++          if (rec) await useLibrary.getState().setProgress(rec);
++        }
++
++        const notes: string[] = [];
++        if (failed.length) notes.push(`Could not upload: ${failed.join('; ')}`);
++        if (plan.tooLarge.length) notes.push(`${plan.tooLarge.length} book${plan.tooLarge.length === 1 ? ' is' : 's are'} over 50 MB and stay${plan.tooLarge.length === 1 ? 's' : ''} only on this device.`);
++        set({ cloud: rows, lastSync: Date.now(), error: notes.length ? notes.join(' ') : null });
++      } catch (e) {
++        set({ error: `Sync failed: ${authMessage(msg(e))}` });
++      } finally {
++        set({ busy: null });
++      }
++    },
++
++    async download(hash) {
++      const user = get().user;
++      const row = get().cloud.find((r) => r.hash === hash);
++      if (!user || !row || get().downloading.includes(hash)) return;
++      set({ downloading: [...get().downloading, hash], error: null });
++      const tmp = new File(Paths.cache, `account-${hash.slice(0, 16)}-${Date.now()}`);
++      try {
++        const signed = await cloud().storage.from(BUCKET).createSignedUrl(storagePath(user.id, row.hash, row.file_name), 900);
++        if (signed.error || !signed.data?.signedUrl) throw signed.error ?? new Error('No download link');
++        await File.downloadFileAsync(signed.data.signedUrl, tmp);
++        const [res] = await importMany([{ name: row.file_name, size: row.size, readBytes: () => tmp.bytes() }], { repo: await getRepo(), files: fileStore, sha256: sha256Hex });
++        if (res.status === 'failed') throw new Error(res.message);
++        await useLibrary.getState().load();
++        const book = res.status === 'imported' ? res.book : res.existing;
++        const rec = localProgress(book.id, row);
++        if (rec && !useLibrary.getState().progress[book.id]) await useLibrary.getState().setProgress(rec);
++      } catch (e) {
++        set({ error: `Could not download "${row.title || row.file_name}": ${authMessage(msg(e))}` });
++      } finally {
++        try { if (tmp.exists) tmp.delete(); } catch { /* temporary file */ }
++        set({ downloading: get().downloading.filter((h) => h !== hash) });
++      }
++    },
++
++    async removeFromAccount(hash) {
++      const user = get().user;
++      const row = get().cloud.find((r) => r.hash === hash);
++      if (!user || !row) return;
++      set({ error: null });
++      try {
++        const c = cloud();
++        const del = await c.from('books').delete().eq('user_id', user.id).eq('hash', hash);
++        if (del.error) throw del.error;
++        await c.storage.from(BUCKET).remove([storagePath(user.id, row.hash, row.file_name)]);
++        // if the book is still on this device, do not send it straight back on the next sync
++        if (useLibrary.getState().books.some((b) => b.hash === hash)) {
++          const ex = await excludedHashes();
++          if (!ex.includes(hash)) await (await getRepo()).setKV('cloudExcluded', JSON.stringify([...ex, hash]));
++        }
++        set({ cloud: get().cloud.filter((r) => r.hash !== hash) });
++      } catch (e) {
++        set({ error: `Could not remove the book from your account: ${authMessage(msg(e))}` });
++      }
++    },
++  };
++});
+diff --git a/mobile/supabase/schema.sql b/mobile/supabase/schema.sql
+new file mode 100644
+index 0000000..2bc2691
+--- /dev/null
++++ b/mobile/supabase/schema.sql
+@@ -0,0 +1,51 @@
++-- RealBook Reader accounts: run this once in the Supabase SQL editor of a new project.
++-- It creates a table listing each person's books and a private file bucket, both locked so that
++-- a signed-in person can only ever read or change their own rows and files.
++
++create table if not exists public.books (
++  user_id     uuid   not null default auth.uid() references auth.users (id) on delete cascade,
++  hash        text   not null,            -- sha-256 of the book file; the same book has the same hash on every device
++  file_name   text   not null,
++  format      text   not null,
++  size        bigint not null,
++  title       text   not null default '',
++  author      text   not null default '',
++  added_at    bigint not null,
++  progress    jsonb,                      -- reading position
++  progress_at bigint not null default 0,
++  primary key (user_id, hash)
++);
++
++alter table public.books enable row level security;
++
++drop policy if exists "own books" on public.books;
++create policy "own books" on public.books
++  for all to authenticated
++  using (auth.uid() = user_id)
++  with check (auth.uid() = user_id);
++
++-- Book files live at  <user id>/<hash>.<ext>  in a private bucket.
++insert into storage.buckets (id, name, public)
++values ('books', 'books', false)
++on conflict (id) do nothing;
++
++drop policy if exists "own book files: read" on storage.objects;
++create policy "own book files: read" on storage.objects
++  for select to authenticated
++  using (bucket_id = 'books' and (storage.foldername(name))[1] = auth.uid()::text);
++
++drop policy if exists "own book files: add" on storage.objects;
++create policy "own book files: add" on storage.objects
++  for insert to authenticated
++  with check (bucket_id = 'books' and (storage.foldername(name))[1] = auth.uid()::text);
++
++drop policy if exists "own book files: replace" on storage.objects;
++create policy "own book files: replace" on storage.objects
++  for update to authenticated
++  using (bucket_id = 'books' and (storage.foldername(name))[1] = auth.uid()::text)
++  with check (bucket_id = 'books' and (storage.foldername(name))[1] = auth.uid()::text);
++
++drop policy if exists "own book files: delete" on storage.objects;
++create policy "own book files: delete" on storage.objects
++  for delete to authenticated
++  using (bucket_id = 'books' and (storage.foldername(name))[1] = auth.uid()::text);
