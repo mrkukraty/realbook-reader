@@ -9,6 +9,8 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useReducedMotion } from 'react-native-reanimated';
 import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Ionicons } from '@expo/vector-icons';
 import type { TocItem } from '../formats/types';
 import type { Bookmark, BookRecord, ContentManifest, Highlight, HighlightColor } from '../storage/types';
@@ -17,11 +19,18 @@ import { useLibrary } from '../state/library-store';
 import { getRepo } from '../state/repo';
 import { uid } from '../storage/library-logic';
 import { THEMES, perfProfile } from '../settings/themes';
+import { LIMITS } from '../settings/types';
 import { IconBtn, PromptModal } from '../components/ui';
 import { originalFile, readManifest, readSection } from '../platform/files';
 import { FlipBook, type FlipBookHandle, type Role, type Side } from './FlipBook';
 import { PageSurface, type ShownInfo, type SurfaceEvent, type SurfaceTarget } from './PageSurface';
 import { ImageSurface } from './ImageSurface';
+import { ZoomView } from './ZoomView';
+import { FocusChip, FocusPanel } from './FocusTimer';
+import { ReadAloudBar, ReadAloudPanel, useReadAloud } from './ReadAloud';
+import { chapterOfPage, joinPdfPages, offsetOfPage, pageAtOffset, pdfChapters, type JoinedChapter } from './pdf-reflow';
+import { focusElapsed, useStats } from '../state/stats-store';
+import { formatMinutes, pagesPerMinute } from '../stats/reading-stats';
 import { PdfRenderer, type PdfOpened, type PdfOutlineItem, type PdfRendererHandle } from './PdfRenderer';
 import { createCbzProvider } from './cbz-provider';
 import { chooseFlipMode, pageBox, primaryPageOfSpread, spreadCount, spreadOfPage, pagesOfSpread, type FlipMode } from './spread';
@@ -37,7 +46,7 @@ let keySeq = 0;
 const nextKey = () => `k${++keySeq}`;
 
 interface CurState { section: number; page: number; pageCount: number }
-type Panel = null | 'toc' | 'bookmarks' | 'highlights' | 'search' | 'appearance';
+type Panel = null | 'toc' | 'bookmarks' | 'highlights' | 'search' | 'appearance' | 'focus' | 'speech';
 
 export default function ReaderScreen({ bookId }: { bookId: string }) {
   const book = useLibrary((s) => s.books.find((b) => b.id === bookId));
@@ -77,13 +86,18 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
   const theme = THEMES[settings.theme];
   const profile = perfProfile(settings.perfMode);
   const reduceMotion = useReducedMotion();
-  const animate = settings.animations && !reduceMotion;
+  const flat = !!theme.flat;
+  // e-ink style: pages change instantly
+  const animate = settings.animations && !reduceMotion && !flat;
   const insets = useSafeAreaInsets();
   const win = useWindowDimensions();
-  const isReflow = manifest.kind === 'reflow';
   const isPdf = book.format === 'pdf';
-  const sectionCount = manifest.sections.length;
-  const sectionLens = useMemo(() => manifest.sections.map((s) => s.chars), [manifest]);
+  // PDF text view: the PDF's text re-flows continuously, one section per chapter (see pdf-reflow.ts)
+  const pdfText = isPdf && settings.pdfView === 'text';
+  const isReflow = manifest.kind === 'reflow' || pdfText;
+  const pdfTint = isPdf && !pdfText && settings.pdfColors === 'theme'
+    ? { bg: settings.customPageColor ?? theme.page, fg: settings.customTextColor ?? theme.text } : null;
+  const fixedPageColor = isPdf ? (pdfTint ? pdfTint.bg : '#ffffff') : theme.page;
 
   // ---------- fixed-layout page source ----------
   const [fixedInfo, setFixedInfo] = useState<{ pageCount: number; aspect: number; toc: TocItem[] } | null>(null);
@@ -114,14 +128,33 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
     if (info.pageCount && info.pageCount !== book.pageCount) void useLibrary.getState().patchBook(book.id, { pageCount: info.pageCount });
   }, [book.id, book.pageCount]);
 
+  const chapters = useMemo(() => {
+    if (!pdfText || !fixedInfo) return [];
+    const top = fixedInfo.toc.flatMap((t) => ('page' in t.target ? [{ title: t.title, page: t.target.page }] : []));
+    const all: { title: string; page: number }[] = [];
+    const walk = (items: TocItem[]) => items.forEach((t) => { if ('page' in t.target) all.push({ title: t.title, page: t.target.page }); if (t.children) walk(t.children); });
+    walk(fixedInfo.toc);
+    return pdfChapters(fixedInfo.pageCount, top.length >= 2 ? top : all);
+  }, [pdfText, fixedInfo]);
+  /** joined chapter text + where each PDF page starts in it, filled as chapters load */
+  const joined = useRef<Record<number, JoinedChapter>>({});
+  useEffect(() => { joined.current = {}; }, [chapters]);
+
+  const sectionCount = pdfText ? chapters.length : manifest.sections.length;
+  const sectionLens = useMemo(
+    () => (pdfText ? chapters.map((c) => c.end - c.start) : manifest.sections.map((s) => s.chars)),
+    [pdfText, chapters, manifest],
+  );
+
   // ---------- layout ----------
-  const areaW = win.width - 16;
-  const areaH = win.height - insets.top - insets.bottom - 16;
+  const FOOTER = 22; // e-reader status line under the page
+  const areaW = flat ? win.width : win.width - 16;
+  const areaH = flat ? win.height - insets.top - insets.bottom - FOOTER : win.height - insets.top - insets.bottom - 16;
   const mode: FlipMode = chooseFlipMode(win.width, win.height, settings.layout);
-  const aspect = isReflow ? (mode === 'double' ? 0.7 : Math.min(0.8, areaW / areaH)) : (fixedInfo?.aspect ?? 0.7);
+  const aspect = isReflow ? (mode === 'double' ? (flat ? areaW / 2 / areaH : 0.7) : (flat ? areaW / areaH : Math.min(0.8, areaW / areaH))) : (fixedInfo?.aspect ?? 0.7);
   const { pw, ph } = pageBox(areaW, areaH, mode, aspect);
   const geom = useMemo(() => pageGeometry(pw, ph, settings), [pw, ph, settings]);
-  const styleKey = `${settings.theme}|${settings.fontFamily}|${settings.fontSize}|${settings.lineHeight}|${settings.margin}|${settings.align}|${pw}x${ph}|${mode}`;
+  const styleKey = `${settings.theme}|${settings.fontFamily}|${settings.fontSize}|${settings.lineHeight}|${settings.paraSpacing}|${settings.margin}|${settings.align}|${pw}x${ph}|${mode}|${pdfText ? 'pt' : ''}|${pdfTint ? pdfTint.bg + pdfTint.fg : ''}`;
   const pageCount = fixedInfo?.pageCount ?? 0;
 
   // ---------- location state ----------
@@ -137,9 +170,86 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
   const flipRef = useRef<FlipBookHandle>(null);
   const [chrome, setChrome] = useState(true);
   const [panel, setPanel] = useState<Panel>(null);
+  const [zoom, setZoom] = useState<{ x: number; y: number } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = (m: string) => { setToast(m); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 2200); };
+  const [goto, setGoto] = useState(false);
+
+  // ---------- reading time, focus timer, screen ----------
+  const lastActive = useRef(Date.now());
+  const fractionRef = useRef(0);
+  useEffect(() => {
+    void useStats.getState().load();
+    // count reading time while the reader is open, in the foreground and recently used
+    const id = setInterval(() => {
+      if (AppState.currentState === 'active' && Date.now() - lastActive.current < 3 * 60_000) useStats.getState().add(15_000, 0);
+    }, 15_000);
+    return () => clearInterval(id);
+  }, []);
+  const focus = useStats((s) => s.focus);
+  useEffect(() => {
+    if (!focus || focus.pausedAt) return;
+    const id = setTimeout(() => {
+      const f = useStats.getState().endFocus();
+      if (!f) return;
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      // a session started in another book says nothing about progress in this one
+      const gained = f.bookId === book.id ? Math.max(0, fractionRef.current - f.startFraction) * 100 : 0;
+      Alert.alert('Focus session complete', `${Math.round(f.durationMs / 60_000)} minutes · ${f.pages} page${f.pages === 1 ? '' : 's'} read · +${gained.toFixed(gained < 10 ? 1 : 0)}% of the book.`, [
+        { text: 'Done', style: 'cancel' },
+        { text: 'Another 10 min', onPress: () => useStats.getState().startFocus(10, book.id, fractionRef.current) },
+      ]);
+    }, Math.max(0, focus.durationMs - focusElapsed(focus, Date.now())));
+    return () => clearTimeout(id);
+  }, [focus, book.id]);
+  // ---------- read aloud ----------
+  const [textReq, setTextReq] = useState<string | null>(null);
+  const textWait = useRef<{ req: string; expect: string[]; got: Record<string, string>; resolve(t: string): void } | null>(null);
+  /** Text of the page(s) on screen. Text pages are asked for it (see 'pageText' in onEvent); PDF pages use the rebuilt text. */
+  const getPageText = async (): Promise<string> => {
+    const c = curRef.current;
+    if (!c || !(await waitFor(() => setReady(curSet.current), 2500))) throw new Error('Page not ready');
+    if (!isReflow) {
+      const r = pdfRef.current;
+      if (!isPdf || !r) return '';
+      const pages: (number | null)[] = mode === 'single' ? [c.page] : pagesOfSpread(spreadOfPage(c.page, 'double'), 'double', pageCount);
+      const parts = await Promise.all(pages.filter((p): p is number => p !== null).map((p) => r.getHtml(p)));
+      return parts.map((h) => htmlToText(h.replace(/<\/(p|h2)>/g, '\n'))).join('\n');
+    }
+    const sides: Side[] = mode === 'double' ? ['L', 'R'] : ['R'];
+    const expect = sides.map((s) => sidOf(curSet.current, s)).filter((sid) => !!targetsRef.current[sid]);
+    const req = nextKey();
+    return new Promise<string>((resolve, reject) => {
+      textWait.current = { req, expect, got: {}, resolve };
+      setTextReq(req);
+      setTimeout(() => { if (textWait.current?.req === req) { textWait.current = null; reject(new Error('Page text timed out')); } }, 1500);
+    });
+  };
+  const canSpeak = isReflow || isPdf;
+  const speech = useReadAloud({
+    locKey: cur ? `${cur.section}:${cur.page}:${styleKey}` : null,
+    getPageText,
+    canNext: () => canTurn(1),
+    next: () => flipRef.current?.next(),
+    lang: settings.speechLang,
+    voice: settings.speechVoice,
+    rate: settings.speechRate,
+    bookLang: book.metadata.language,
+    notify: (m) => showToast(m),
+  });
+  const toggleSpeech = () => {
+    if (!canSpeak) { showToast('Comic pages are pictures, so they cannot be read aloud'); return; }
+    if (speech.state === 'off') { setChrome(false); speech.start(); } else if (speech.state === 'playing') speech.pause(); else speech.resume();
+  };
+
+  const awake = settings.keepAwake || speech.state === 'playing';
+  useEffect(() => {
+    if (!awake) return;
+    void activateKeepAwakeAsync('reader').catch(() => {});
+    return () => { void deactivateKeepAwake('reader').catch(() => {}); };
+  }, [awake]);
+  const stats = useStats((s) => s.stats);
 
   const updateTargets = (patch: Targets) => {
     targetsRef.current = { ...targetsRef.current, ...patch };
@@ -223,6 +333,8 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
   };
 
   const onCommitted = (_dir: 1 | -1, newCur: SetIdx) => {
+    lastActive.current = Date.now();
+    useStats.getState().add(0, mode === 'double' ? 2 : 1);
     curSet.current = newCur;
     auxFor.current = null;
     const info = shown.current[sidOf(newCur, primarySide)];
@@ -249,14 +361,39 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
       void useLibrary.getState().setProgress({
         bookId: book.id, fraction, updatedAt: Date.now(),
         ...(isReflow ? { section: c.section, sectionFraction: pageToSectionFraction(c.page, c.pageCount) } : { page: c.page }),
+        ...(pdfText ? { page: pdfPageOf(c) } : {}),
       });
     }, 350);
-  }, [book.id, isReflow, sectionLens]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [book.id, isReflow, pdfText, sectionLens, chapters]);
+
+  /** The original PDF page being read (text view maps its position back through the chapter's page offsets). */
+  const pdfPageOf = (c: CurState): number => {
+    if (!pdfText) return c.page;
+    const ch = chapters[c.section];
+    if (!ch) return 0;
+    const f = pageToSectionFraction(c.page, c.pageCount);
+    const j = joined.current[c.section];
+    if (j && j.chars) return pageAtOffset(j, f * j.chars);
+    return Math.min(ch.end - 1, ch.start + Math.floor(f * (ch.end - ch.start)));
+  };
+  /** Text-view position of a PDF page (loads its chapter first so the offset is exact). */
+  const textPosOfPage = async (page: number): Promise<{ section: number; pos: StartPos }> => {
+    const s = chapterOfPage(chapters, page);
+    try { await getSection(s); } catch { /* fall back to an estimate */ }
+    const j = joined.current[s];
+    const off = j ? offsetOfPage(j, page) : null;
+    if (off !== null) return { section: s, pos: { offset: off } };
+    const ch = chapters[s];
+    return { section: s, pos: { fraction: ch ? (page - ch.start) / Math.max(1, ch.end - ch.start) : 0 } };
+  };
+  const lastPdfPage = useRef(0);
 
   const commitLoc = (info: ShownInfo) => {
     const c: CurState = isReflow ? { section: info.section, page: info.page, pageCount: info.pageCount } : { section: 0, page: info.page, pageCount };
     setCur(c);
     curRef.current = c;
+    if (isPdf) lastPdfPage.current = pdfPageOf(c);
     persist(c);
   };
 
@@ -301,8 +438,10 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
   }, [mode, isReflow, pageCount, primarySide]);
 
   useEffect(() => {
-    if (!isReflow && !fixedInfo) return;
+    if ((!isReflow || pdfText) && !fixedInfo) return;
     let alive = true;
+    const switched = prevPdfText.current !== pdfText;
+    prevPdfText.current = pdfText;
     (async () => {
       // reset all surfaces for the new layout
       targetsRef.current = {};
@@ -310,6 +449,15 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
       pendingRight.current = {};
       auxFor.current = null;
       const c = curRef.current;
+      if (switched) { textCache.current = null; switchPending.current = !!c; } // search text differs between the two views
+      if (c && switchPending.current) {
+        // PDF page view <-> text view: continue from the same PDF page. Stays pending until the jump is made,
+        // so a re-layout while the chapter is still loading does not reuse the other view's position.
+        const page = lastPdfPage.current;
+        if (pdfText) { const ref = await textPosOfPage(page); if (!alive) return; jumpTo(ref); } else jumpTo({ section: 0, pos: { page } });
+        switchPending.current = false;
+        return;
+      }
       if (c) {
         // re-layout: keep the reading position
         jumpTo(isReflow ? { section: c.section, pos: { fraction: pageToSectionFraction(c.page, c.pageCount) } } : { section: 0, pos: { page: c.page } });
@@ -317,7 +465,13 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
       }
       const p = await (await getRepo()).getProgress(book.id);
       if (!alive) return;
-      if (isReflow) {
+      if (pdfText) {
+        // resume inside the same chapter if it still matches the saved PDF page, else from that page
+        const pg = Math.min(Math.max(0, p?.page ?? 0), Math.max(0, pageCount - 1));
+        const ch = p?.section !== undefined ? chapters[p.section] : undefined;
+        if (ch && p?.sectionFraction !== undefined && pg >= ch.start && pg < ch.end) jumpTo({ section: p.section!, pos: { fraction: p.sectionFraction } });
+        else { const ref = await textPosOfPage(pg); if (alive) jumpTo(ref); }
+      } else if (isReflow) {
         const sec = Math.min(Math.max(0, p?.section ?? 0), sectionCount - 1);
         jumpTo({ section: sec, pos: { fraction: p?.sectionFraction ?? 0 } });
       } else {
@@ -327,6 +481,8 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [styleKey, !!fixedInfo, pageCount]);
+  const prevPdfText = useRef(pdfText);
+  const switchPending = useRef(false);
 
   // ---------- highlights & bookmarks ----------
   const [highlights, setHighlights] = useState<Highlight[]>([]);
@@ -369,14 +525,20 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
   };
 
   const sectionTitle = useCallback((n: number) => {
+    if (pdfText) return chapters[n]?.title ?? `Part ${n + 1}`;
     if (!isReflow) return `Page ${n + 1}`;
     let best: string | undefined;
     const walk = (items: TocItem[]) => items.forEach((i) => { if ('section' in i.target && i.target.section <= n) best = i.title; if (i.children) walk(i.children); });
     walk(manifest.toc);
     return manifest.sections[n]?.title ?? best ?? `Part ${n + 1}`;
-  }, [isReflow, manifest]);
+  }, [isReflow, pdfText, chapters, manifest]);
 
+  // time left in the book at your pace (page-based books only)
+  const ppm = pagesPerMinute(stats, new Date());
+  const timeLeft = ppm && cur && (!isReflow || pdfText) && pageCount
+    ? `${formatMinutes(Math.max(0, pageCount - 1 - (pdfText ? lastPdfPage.current : cur.page)) / ppm * 60_000)} left` : null;
   const currentFraction = cur ? (isReflow ? overallFraction(cur.section, pageToSectionFraction(cur.page, cur.pageCount), sectionLens) : fixedFraction(cur.page, pageCount)) : 0;
+  fractionRef.current = currentFraction;
   const bookmarkHere = cur ? bookmarks.find((b) => (isReflow
     ? b.section === cur.section && sectionFractionToPage(b.sectionFraction ?? 0, cur.pageCount) === cur.page
     : b.page === cur.page)) : undefined;
@@ -391,7 +553,7 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
       return;
     }
     const b: Bookmark = isReflow
-      ? { id: uid(), bookId: book.id, createdAt: Date.now(), label: `${sectionTitle(cur.section)} · ${percentLabel(currentFraction)}`, section: cur.section, sectionFraction: pageToSectionFraction(cur.page, cur.pageCount) }
+      ? { id: uid(), bookId: book.id, createdAt: Date.now(), label: pdfText ? `Page ${pdfPageOf(cur) + 1} · ${sectionTitle(cur.section)}` : `${sectionTitle(cur.section)} · ${percentLabel(currentFraction)}`, section: cur.section, sectionFraction: pageToSectionFraction(cur.page, cur.pageCount), ...(pdfText ? { page: pdfPageOf(cur) } : {}) }
       : { id: uid(), bookId: book.id, createdAt: Date.now(), label: `Page ${cur.page + 1} of ${pageCount}`, page: cur.page };
     await r.putBookmark(b);
     setBookmarks((l) => [...l, b]);
@@ -414,7 +576,11 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
       setSearching('Searching…');
       if (!textCache.current) {
         const arr: string[] = [];
-        for (let i = 0; i < sectionCount; i++) arr.push(htmlToText(await readSection(book.id, i)));
+        for (let i = 0; i < sectionCount; i++) {
+          if (token !== searchToken.current) return;
+          if (pdfText && i % 5 === 0) setSearching(`Searching part ${i + 1} of ${sectionCount}…`);
+          arr.push(htmlToText(await getSection(i)));
+        }
         textCache.current = arr;
       }
       if (token !== searchToken.current) return;
@@ -456,6 +622,21 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
       case 'dragStart': fb?.dragStart(e.dx); return;
       case 'drag': fb?.drag(e.dx); return;
       case 'dragEnd': fb?.dragEnd(e.dx, e.vx); return;
+      case 'pinch': {
+        // pinch on a text page changes the font size
+        const st = useSettings.getState();
+        const [lo, hi] = LIMITS.fontSize;
+        const size = Math.round(Math.min(hi, Math.max(lo, st.settings.fontSize * e.scale)));
+        if (size !== st.settings.fontSize) { st.update({ fontSize: size }); showToast(`Text size ${size}px`); }
+        return;
+      }
+      case 'pageText': {
+        const w = textWait.current;
+        if (!w || w.req !== e.req) return;
+        w.got[sid] = e.text;
+        if (w.expect.every((s) => s in w.got)) { textWait.current = null; w.resolve(w.expect.map((s) => w.got[s]).join('\n')); }
+        return;
+      }
       case 'link':
         if (Number.isFinite(e.section) && e.section >= 0 && e.section < sectionCount) {
           jumpTo({ section: e.section, pos: e.anchor ? { anchor: e.anchor } : { page: 0 } });
@@ -491,13 +672,40 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
   // ---------- rendering ----------
   const getPdfPage = useCallback((page: number) => {
     if (!pdfRef.current) return Promise.reject(new Error('PDF engine not ready'));
-    return pdfRef.current.getPageUri(page, Math.round(pw * Math.min(2.5, PixelRatio.get())));
-  }, [pw]);
+    return pdfRef.current.getPageUri(page, Math.round(pw * Math.min(2.5, PixelRatio.get())), pdfTint);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pw, pdfTint?.bg, pdfTint?.fg]);
+  const getZoomPage = useCallback((page: number, hiRes: boolean) => {
+    if (!isPdf) return cbzRef.current ? cbzRef.current.getPageUri(page) : Promise.reject(new Error('Comic not ready'));
+    if (!pdfRef.current) return Promise.reject(new Error('PDF engine not ready'));
+    const base = Math.round(pw * Math.min(2.5, PixelRatio.get()));
+    // the renderer caps width at 2400px, which is about 2-3x on a phone
+    return pdfRef.current.getPageUri(page, hiRes ? Math.min(2400, Math.round(pw * PixelRatio.get() * 3)) : base, pdfTint);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPdf, pw, pdfTint?.bg, pdfTint?.fg]);
+  const zoomPages = (): (number | null)[] => {
+    if (!cur) return [];
+    if (mode === 'single') return [cur.page];
+    const [l, r] = pagesOfSpread(spreadOfPage(cur.page, 'double'), 'double', pageCount);
+    return [l, r];
+  };
   const getCbzPage = useCallback((page: number) => {
     if (!cbzRef.current) return Promise.reject(new Error('Comic not ready'));
     return cbzRef.current.getPageUri(page);
   }, []);
-  const getSection = useCallback((n: number) => readSection(book.id, n), [book.id]);
+  const getSection = useCallback(async (n: number) => {
+    if (!pdfText) return readSection(book.id, n);
+    const hit = joined.current[n];
+    if (hit) return hit.html;
+    const ch = chapters[n];
+    const r = pdfRef.current;
+    if (!ch || !r) throw new Error('PDF engine not ready');
+    const pages: { page: number; html: string }[] = [];
+    for (let p = ch.start; p < ch.end; p++) pages.push({ page: p, html: await r.getHtml(p) });
+    const j = joinPdfPages(pages);
+    joined.current[n] = j;
+    return j.html;
+  }, [book.id, pdfText, chapters]);
 
   const renderSurface = (set: SetIdx, side: Side, role: Role) => {
     const sid = sidOf(set, side);
@@ -508,7 +716,7 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
           sid={sid} target={tg} getSection={getSection} settings={settings} styleKey={styleKey} geom={geom}
           even={mode === 'double' && side === 'L'} lang={book.metadata.language}
           highlightsFor={highlightsFor} highlightsVersion={hlVersion} searchMark={searchMark}
-          interactive={role === 'cur'} pageColor={settings.customPageColor ?? theme.page}
+          interactive={role === 'cur'} textReq={role === 'cur' ? textReq : null} pageColor={settings.customPageColor ?? theme.page}
           onShown={onShown} onEvent={onEvent}
         />
       );
@@ -516,18 +724,20 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
     const page = tg && 'page' in tg.pos && typeof tg.pos.page === 'number' ? tg.pos.page : null;
     return (
       <ImageSurface sid={sid} page={tg ? page : null} targetKey={tg?.key ?? null} getPageUri={isPdf ? getPdfPage : getCbzPage}
-        pageColor={isPdf ? '#ffffff' : theme.page} textColor={theme.text} onShown={onImageShown} dim={theme.dark} />
+        pageColor={fixedPageColor} textColor={theme.text} onShown={onImageShown} dim={theme.dark && !pdfTint} />
     );
   };
 
-  const fixedReady = isReflow || !!fixedInfo;
+  const fixedReady = (isReflow && !pdfText) || !!fixedInfo;
   const fatal = fixedError;
   const progressLabel = cur
-    ? isReflow
+    ? pdfText
+      ? `p. ${pdfPageOf(cur) + 1} of ${pageCount} · ${percentLabel(currentFraction)}${timeLeft ? ` · ${timeLeft}` : ''}`
+      : isReflow
       ? `${sectionTitle(cur.section)} · page ${cur.page + 1}/${cur.pageCount} · ${percentLabel(currentFraction)}`
       : mode === 'double'
         ? `Pages ${visibleLabel(cur.page, pageCount)} of ${pageCount} · ${percentLabel(currentFraction)}`
-        : `Page ${cur.page + 1} of ${pageCount} · ${percentLabel(currentFraction)}`
+        : `Page ${cur.page + 1} of ${pageCount} · ${percentLabel(currentFraction)}${timeLeft ? ` · ${timeLeft}` : ''}`
     : 'Opening…';
 
   const scrubTo = (f: number) => {
@@ -541,7 +751,9 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
 
   const tocSelect = (item: TocItem) => {
     setPanel(null);
-    if ('page' in item.target) jumpTo({ section: 0, pos: { page: item.target.page } });
+    if ('page' in item.target) {
+      if (pdfText) void textPosOfPage(item.target.page).then(jumpTo); else jumpTo({ section: 0, pos: { page: item.target.page } });
+    }
     else jumpTo({ section: item.target.section, pos: item.target.anchor ? { anchor: item.target.anchor } : { page: 0 } });
   };
 
@@ -549,25 +761,61 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
     <View style={{ flex: 1, backgroundColor: settings.customDeskColor ?? theme.desk }}>
       <StatusBar hidden={!chrome} style={theme.dark ? 'light' : 'dark'} />
       {isPdf ? <PdfRenderer ref={pdfRef} bookId={book.id} file={origFile} onOpened={onPdfOpened} onError={setFixedError} /> : null}
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: insets.top, paddingBottom: insets.bottom }}>
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: insets.top, paddingBottom: insets.bottom + (flat ? FOOTER : 0) }}>
         {fatal ? (
           <View style={{ padding: 24, maxWidth: 520 }}>
             <Text style={{ color: '#f2e6cf', textAlign: 'center', lineHeight: 21 }}>{fatal}</Text>
             <Pressable onPress={() => router.back()} style={{ padding: 14, alignSelf: 'center' }} accessibilityRole="button"><Text style={{ color: '#f2e6cf', fontWeight: '700' }}>Back to library</Text></Pressable>
           </View>
         ) : !fixedReady ? <ActivityIndicator color="#f2e6cf" /> : (
-          <View style={{ shadowColor: '#000', shadowOpacity: 0.5 * (0.4 + settings.shadowStrength), shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 12 }}>
+          <View style={flat ? null : { shadowColor: '#000', shadowOpacity: 0.5 * (0.4 + settings.shadowStrength), shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 12 }}>
             <FlipBook
               ref={flipRef}
               mode={mode} pw={pw} ph={ph} theme={theme} profile={profile} animate={animate}
               speed={settings.animationSpeed} shadowStrength={settings.shadowStrength} readFraction={currentFraction}
               renderSurface={renderSurface} canTurn={canTurn} prepareAux={prepareAux} onCommitted={onCommitted}
-              turnInPlace={turnInPlace} onCenterTap={() => { setSelection(null); setChrome((c) => !c); }}
+              turnInPlace={turnInPlace} onCenterTap={() => { lastActive.current = Date.now(); setSelection(null); setChrome((c) => !c); }}
               nativeGestures={!isReflow} onEdgeReached={(d) => showToast(d === 1 ? 'End of the book' : 'Beginning of the book')}
+              onZoom={isReflow ? undefined : (x, y) => { setSelection(null); setChrome(false); setZoom({ x, y }); }}
+              flat={flat}
             />
           </View>
         )}
       </View>
+
+      {flat && !chrome && cur ? (
+        <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, bottom: insets.bottom, height: FOOTER, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18 }}>
+          <Text style={{ flex: 1, color: theme.muted, fontSize: 11 }} numberOfLines={1}>
+            {isReflow && !pdfText ? `${sectionTitle(cur.section)} · page ${cur.page + 1} of ${cur.pageCount}` : `Page ${pdfPageOf(cur) + 1} of ${pageCount}${timeLeft ? ` · ${timeLeft}` : ''}`}
+          </Text>
+          <Text style={{ color: theme.muted, fontSize: 11 }}>{percentLabel(currentFraction)}</Text>
+        </View>
+      ) : null}
+
+      {settings.dim > 0 || settings.warmth > 0 ? (
+        <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 }}>
+          {settings.warmth > 0 ? <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: '#ff8a1e', opacity: settings.warmth * 0.35 }} /> : null}
+          {settings.dim > 0 ? <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: '#000', opacity: settings.dim }} /> : null}
+        </View>
+      ) : null}
+
+      <View style={{ position: 'absolute', right: 10, top: insets.top + (chrome ? 54 : 6) }}>
+        <FocusChip color={theme.chromeText} background={theme.chrome} onPress={() => setPanel('focus')} />
+      </View>
+
+      {speech.state !== 'off' && !selection ? (
+        <View style={{ position: 'absolute', alignSelf: 'center', bottom: insets.bottom + (chrome ? 104 : 12 + (flat ? FOOTER : 0)) }}>
+          <ReadAloudBar state={speech.state} color={theme.chromeText} background={theme.chrome}
+            onToggle={toggleSpeech} onStop={speech.stop} onOptions={() => setPanel('speech')} />
+        </View>
+      ) : null}
+
+      {zoom && !isReflow && cur ? (
+        <View style={{ position: 'absolute', left: 0, right: 0, top: insets.top, bottom: insets.bottom, backgroundColor: settings.customDeskColor ?? theme.desk }}>
+          <ZoomView pages={zoomPages()} pw={pw} ph={ph} start={{ scale: 2, ...zoom }} getPageUri={getZoomPage}
+            pageColor={fixedPageColor} chromeColor={theme.chrome} onClose={() => setZoom(null)} />
+        </View>
+      ) : null}
 
       {chrome ? (
         <>
@@ -585,7 +833,11 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
             <Scrubber fraction={currentFraction} color={theme.accent} track={theme.edge} onSeek={scrubTo} />
             <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
               <IconBtn icon="chevron-back-circle-outline" label="Previous page" color={theme.chromeText} onPress={() => flipRef.current?.prev()} />
-              <Text style={{ flex: 1, color: theme.muted, fontSize: 12, textAlign: 'center' }} numberOfLines={1}>{progressLabel}</Text>
+              <IconBtn icon="timer-outline" label="Focus timer and reading status" color={theme.chromeText} onPress={() => setPanel('focus')} />
+              <IconBtn icon={speech.state === 'playing' ? 'pause-circle-outline' : 'volume-high-outline'} label={speech.state === 'off' ? 'Read aloud' : speech.state === 'playing' ? 'Pause reading aloud' : 'Continue reading aloud'} color={theme.chromeText} onPress={toggleSpeech} />
+              <Pressable style={{ flex: 1 }} onPress={() => setGoto(true)} accessibilityRole="button" accessibilityLabel={`${progressLabel}. Go to page`}>
+                <Text style={{ color: theme.muted, fontSize: 12, textAlign: 'center' }} numberOfLines={1}>{progressLabel}</Text>
+              </Pressable>
               <IconBtn icon="chevron-forward-circle-outline" label="Next page" color={theme.chromeText} onPress={() => flipRef.current?.next()} />
             </View>
           </View>
@@ -610,9 +862,15 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
         </View>
       ) : null}
 
-      <TocPanel visible={panel === 'toc'} toc={isReflow ? manifest.toc : (fixedInfo?.toc ?? [])} currentSection={cur?.section} onClose={() => setPanel(null)} onSelect={tocSelect} />
+      <TocPanel visible={panel === 'toc'} toc={isReflow && !pdfText ? manifest.toc : (fixedInfo?.toc ?? [])} currentSection={cur?.section} onClose={() => setPanel(null)} onSelect={tocSelect} />
       <BookmarksPanel visible={panel === 'bookmarks'} bookmarks={bookmarks} onClose={() => setPanel(null)}
-        onSelect={(b) => { setPanel(null); if (b.page !== undefined) jumpTo({ section: 0, pos: { page: b.page } }); else jumpTo({ section: b.section ?? 0, pos: { fraction: b.sectionFraction ?? 0 } }); }}
+        onSelect={(b) => {
+          setPanel(null);
+          if (pdfText && b.page !== undefined) void textPosOfPage(b.page).then(jumpTo);
+          else if (isPdf && !pdfText && b.page === undefined) jumpTo({ section: 0, pos: { page: b.section ?? 0 } });
+          else if (b.page !== undefined && !pdfText) jumpTo({ section: 0, pos: { page: b.page } });
+          else jumpTo({ section: b.section ?? 0, pos: { fraction: b.sectionFraction ?? 0 } });
+        }}
         onDelete={(b) => { void getRepo().then((r) => r.deleteBookmark(b.id)); setBookmarks((l) => l.filter((x) => x.id !== b.id)); }} />
       <HighlightsPanel visible={panel === 'highlights'} highlights={highlights} sectionTitle={sectionTitle} onClose={() => setPanel(null)}
         onSelect={(h) => { setPanel(null); jumpTo({ section: h.section, pos: { offset: h.start } }); }}
@@ -627,7 +885,21 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
           setSearchMark({ section: r.section, start: r.start, end: r.end });
           jumpTo({ section: r.section, pos: { offset: r.start } });
         }} />
-      <AppearancePanel visible={panel === 'appearance'} onClose={() => setPanel(null)} reflow={isReflow} />
+      <AppearancePanel visible={panel === 'appearance'} onClose={() => setPanel(null)} reflow={isReflow} pdf={isPdf} />
+      <FocusPanel visible={panel === 'focus'} onClose={() => setPanel(null)} bookId={book.id} fraction={currentFraction}
+        timeLeftLabel={timeLeft ? `About ${timeLeft.replace(' left', '')} left in this book at your pace.` : isReflow && !pdfText ? undefined : 'Read a few minutes to learn your pace - then the time left in the book is shown here.'} />
+      <ReadAloudPanel visible={panel === 'speech'} onClose={() => setPanel(null)} />
+      <PromptModal visible={goto} title={isReflow && !pdfText ? 'Go to position' : 'Go to page'}
+        message={isReflow && !pdfText ? 'Enter a percentage (0-100).' : `Enter a page number (1-${pageCount}).`} placeholder={isReflow && !pdfText ? 'e.g. 50' : 'e.g. 42'} confirmLabel="Go"
+        onCancel={() => setGoto(false)}
+        onSubmit={(v) => {
+          setGoto(false);
+          const n = Number(v.replace(/[^0-9.]/g, ''));
+          if (!Number.isFinite(n) || v.trim() === '') return;
+          if (isReflow && !pdfText) { scrubTo(Math.min(100, Math.max(0, n)) / 100); return; }
+          const page = Math.min(Math.max(1, Math.round(n)), Math.max(1, pageCount)) - 1;
+          if (pdfText) void textPosOfPage(page).then(jumpTo); else jumpTo({ section: 0, pos: { page } });
+        }} />
       <PromptModal visible={!!noteEdit} title="Note" message={noteEdit?.text.slice(0, 160)} initial={noteEdit?.note ?? ''} multiline
         placeholder="Write a note for this highlight" onCancel={() => setNoteEdit(null)}
         onSubmit={(v) => { const h = noteEdit; setNoteEdit(null); if (h) void saveNote(h, v); }} />

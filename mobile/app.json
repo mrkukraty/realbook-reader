@@ -43,17 +43,25 @@
           "image": "./assets/splash-icon.png",
           "imageWidth": 180,
           "resizeMode": "contain",
-          "backgroundColor": "#fbf6e9",
+          "backgroundColor": "#5b4636",
           "dark": {
             "image": "./assets/splash-icon.png",
-            "backgroundColor": "#22201d"
+            "backgroundColor": "#5b4636"
           }
         }
       ],
-      "expo-font"
+      "expo-font",
+      "expo-localization"
     ],
     "experiments": {
       "typedRoutes": false
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "a134ffef-9d25-43d0-a175-b8c954a62769"
+      }
+    },
+    "owner": "mr.kukreti"
   }
 }

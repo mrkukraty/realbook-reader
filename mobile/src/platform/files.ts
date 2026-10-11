@@ -73,10 +73,10 @@ export async function readSection(id: string, n: number): Promise<string> {
   return html;
 }
 
-export function pageCacheFile(id: string, page: number, width: number): File {
+export function pageCacheFile(id: string, page: number, width: number, tag = ''): File {
   const d = pagesDir(id);
   ensureDir(d);
-  return new File(d, `${page}-${width}.jpg`);
+  return new File(d, `${page}-${width}${tag ? `-${tag}` : ''}.jpg`);
 }
 export function pageCacheFileExt(id: string, page: number, ext: string): File {
   const d = pagesDir(id);

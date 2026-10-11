@@ -16,7 +16,9 @@ export type SurfaceEvent =
   | { type: 'link'; section: number; anchor: string }
   | { type: 'ext'; url: string }
   | { type: 'selection'; text: string; start?: number; end?: number }
-  | { type: 'hl'; id: string };
+  | { type: 'hl'; id: string }
+  | { type: 'pinch'; scale: number }
+  | { type: 'pageText'; req: string; text: string };
 
 export interface SurfaceHighlight { id: string; start: number; end: number; color: string; note?: string }
 
@@ -33,6 +35,8 @@ interface Props {
   highlightsVersion: number;
   searchMark: { section: number; start: number; end: number } | null;
   interactive: boolean;
+  /** read-aloud: when this changes to a new id, the page answers with a 'pageText' event carrying its visible text */
+  textReq?: string | null;
   pageColor: string;
   onShown(sid: string, info: ShownInfo): void;
   onEvent(sid: string, e: SurfaceEvent): void;
@@ -100,6 +104,11 @@ function PageSurfaceImpl(p: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.searchMark?.section, p.searchMark?.start, p.searchMark?.end]);
 
+  useEffect(() => {
+    if (!p.textReq || !loaded.current?.ready) return;
+    inject(`RB.pageText(${JSON.stringify(p.textReq)})`);
+  }, [p.textReq]);
+
   const onMessage = (ev: WebViewMessageEvent) => {
     let m: Record<string, unknown>;
     try { m = JSON.parse(ev.nativeEvent.data); } catch { return; }
@@ -117,7 +126,7 @@ function PageSurfaceImpl(p: Props) {
         cur.onShown(cur.sid, { section: loaded.current?.section ?? -1, page: Number(m.page), pageCount: Number(m.pageCount), blank: !!m.blank, key: typeof m.key === 'string' ? m.key : null });
         return;
       default:
-        if (cur.interactive || m.type === 'selection') cur.onEvent(cur.sid, m as unknown as SurfaceEvent);
+        if (cur.interactive || m.type === 'selection' || m.type === 'pageText') cur.onEvent(cur.sid, m as unknown as SurfaceEvent);
     }
   };
 

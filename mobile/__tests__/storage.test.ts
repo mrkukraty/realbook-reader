@@ -127,7 +127,7 @@ describe('settings', () => {
   it('normalizes garbage and clamps values', () => {
     expect(normalizeSettings(null)).toEqual(defaultSettings);
     const s = normalizeSettings({ fontSize: 99, lineHeight: 'x', theme: 'neon', perfMode: 'high', animations: false });
-    expect(s.fontSize).toBe(30);
+    expect(s.fontSize).toBe(40);
     expect(s.lineHeight).toBe(defaultSettings.lineHeight);
     expect(s.theme).toBe('ivory');
     expect(s.perfMode).toBe('high');

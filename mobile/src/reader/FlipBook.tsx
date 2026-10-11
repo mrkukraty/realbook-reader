@@ -50,6 +50,10 @@ export interface FlipBookProps {
   /** Fixed-layout books: native pan/tap gestures. Reflow books forward gestures from the WebView instead. */
   nativeGestures: boolean;
   onEdgeReached?(dir: 1 | -1): void;
+  /** Fixed-layout books: pinch-out on the book asks to open the zoom viewer (focal point relative to the book's centre). */
+  onZoom?(focalX: number, focalY: number): void;
+  /** e-reader look: no page edges or spine shadow */
+  flat?: boolean;
 }
 
 const PERSPECTIVE = 1600;
@@ -58,6 +62,10 @@ export const FlipBook = forwardRef<FlipBookHandle, FlipBookProps>(function FlipB
   const { mode, pw, ph, theme, profile } = props;
   const useAux = profile.preloadNeighbor;
   const [curSet, setCurSet] = useState<0 | 1>(0);
+  // Stacking order for the current turn direction. A plain React style rather than an animated one:
+  // zIndex driven from a worklet is not reliably applied on iOS, which hid one turn direction.
+  const [zDir, setZDir] = useState<1 | -1>(1);
+  const zDirRef = useRef<1 | -1>(1);
   const cur = useSharedValue<0 | 1>(0);
   const t = useSharedValue(0);
   const dir = useSharedValue<1 | -1>(1);
@@ -124,6 +132,14 @@ export const FlipBook = forwardRef<FlipBookHandle, FlipBookProps>(function FlipB
     p.onCommitted(d, curSet);
   }, [fade, profile.duration, curSet]);
 
+  /** Apply the stacking order for direction d and wait until it is on screen. */
+  const raise = useCallback((d: 1 | -1) => new Promise<void>((res) => {
+    if (zDirRef.current === d) { res(); return; }
+    zDirRef.current = d;
+    setZDir(d);
+    requestAnimationFrame(() => requestAnimationFrame(() => res()));
+  }), []);
+
   const turn = useCallback(async (d: 1 | -1) => {
     const p = propsRef.current;
     if (busyRef.current) { queued.current = d; return; }
@@ -133,11 +149,12 @@ export const FlipBook = forwardRef<FlipBookHandle, FlipBookProps>(function FlipB
     const ok = await p.prepareAux(d);
     if (!ok) { busyRef.current = false; return; }
     if (!p.animate) { instantSwap(d); return; }
+    await raise(d);
     dir.value = d;
     t.value = 0;
     active.value = 1;
     finish(d, true, 0);
-  }, [useAux, runInPlace, instantSwap, dir, t, active, finish]);
+  }, [useAux, runInPlace, instantSwap, raise, dir, t, active, finish]);
 
   const handle: FlipBookHandle = {
     next: () => { void turn(1); },
@@ -155,7 +172,8 @@ export const FlipBook = forwardRef<FlipBookHandle, FlipBookProps>(function FlipB
       if (!useAux || !p.animate) { dragRef.current = { dir: d, ready: false, dx }; return; }
       busyRef.current = true;
       dragRef.current = { dir: d, ready: false, dx };
-      void p.prepareAux(d).then((ok) => {
+      void p.prepareAux(d).then(async (ok) => {
+        if (ok) await raise(d);
         const g = dragRef.current;
         if (!ok) { busyRef.current = false; dragRef.current = null; return; }
         if (!g) { // finger already lifted: finish the turn as a tap would
@@ -212,7 +230,15 @@ export const FlipBook = forwardRef<FlipBookHandle, FlipBookProps>(function FlipB
     .onFinalize(() => { if (dragRef.current) handle.dragEnd(0, 0); });
   const tapG = Gesture.Tap().runOnJS(true).enabled(props.nativeGestures).maxDuration(300)
     .onEnd((e, ok) => { if (ok) handle.tap(e.x / (flip ? pw * 2 : pw)); });
-  const gestures = Gesture.Exclusive(pan, tapG);
+  const zoomAsked = useRef(false);
+  const pinchG = Gesture.Pinch().runOnJS(true).enabled(props.nativeGestures && !!props.onZoom)
+    .onStart(() => { zoomAsked.current = false; })
+    .onUpdate((e) => {
+      if (zoomAsked.current || e.scale < 1.12 || busyRef.current) return;
+      zoomAsked.current = true;
+      propsRef.current.onZoom?.(e.focalX - (flip ? pw : pw / 2), e.focalY - ph / 2);
+    });
+  const gestures = Gesture.Race(pinchG, Gesture.Exclusive(pan.maxPointers(1), tapG));
 
   const bookW = flip ? pw * 2 : pw;
   const sides: Side[] = flip ? ['L', 'R'] : ['R'];
@@ -220,19 +246,20 @@ export const FlipBook = forwardRef<FlipBookHandle, FlipBookProps>(function FlipB
 
   const content = (
     <View style={{ width: bookW, height: ph }}>
-      <PageEdges theme={theme} mode={mode} pw={pw} ph={ph} layers={profile.edges} readFraction={props.readFraction} />
+      {props.flat ? null : <PageEdges theme={theme} mode={mode} pw={pw} ph={ph} layers={profile.edges} readFraction={props.readFraction} />}
       <Animated.View style={[{ width: bookW, height: ph }, fadeStyle]}>
         {sets.map((s) => sides.map((side) => (
           <SurfaceContainer
             key={`${s}${side}`} set={s} side={side} flip={flip} pw={pw} ph={ph}
             cur={cur} t={t} dir={dir} active={active} shadowK={shadowK} curl={curl} specular={profile.specular} theme={theme}
+            z={zOf(!useAux || s === curSet, side === 'L', zDir, flip)}
             single={!useAux}
           >
             {props.renderSurface(s, side, s === curSet ? 'cur' : 'aux')}
           </SurfaceContainer>
         )))}
       </Animated.View>
-      <Spine theme={theme} mode={mode} pw={pw} ph={ph} strength={props.shadowStrength} />
+      {props.flat ? null : <Spine theme={theme} mode={mode} pw={pw} ph={ph} strength={props.shadowStrength} />}
     </View>
   );
   return <GestureDetector gesture={gestures}>{content}</GestureDetector>;
@@ -242,7 +269,17 @@ interface ContainerProps {
   set: 0 | 1; side: Side; flip: number; pw: number; ph: number;
   cur: { value: 0 | 1 }; t: { value: number }; dir: { value: 1 | -1 }; active: { value: number };
   shadowK: number; curl: number; specular: boolean; theme: Theme; single: boolean;
+  /** static stacking order for the current turn direction (see zOf) */
+  z: number;
   children: React.ReactNode;
+}
+
+/** Stacking order of a surface while turning in direction d: the moving leaf sits above the page it uncovers. */
+function zOf(isCur: boolean, isLeft: boolean, d: 1 | -1, flip: number): number {
+  if (!flip) return (d === 1) === isCur ? 2 : 1;
+  const leading = d === 1 ? !isLeft : isLeft; // side the turning leaf starts on
+  if (leading) return isCur ? 3 : 2;
+  return isCur ? 1 : 4;
 }
 
 function SurfaceContainer(p: ContainerProps) {
@@ -255,26 +292,25 @@ function SurfaceContainer(p: ContainerProps) {
   const geo = () => {
     'worklet';
     const isCur = cur.value === set || single;
-    if (!active.value) return { rot: 0, vis: isCur ? 1 : 0, z: isCur ? 2 : 1, shade: 0, cast: 0 };
+    if (!active.value) return { rot: 0, vis: isCur ? 1 : 0, shade: 0, cast: 0 };
     const tt = t.value;
     const d = dir.value;
     if (!flip) {
       // single page: hinge on the left edge
-      if (d === 1) return isCur ? { rot: -90 * tt, vis: 1, z: 2, shade: 0, cast: 0 } : { rot: 0, vis: 1, z: 1, shade: 0, cast: 1 - tt };
-      return isCur ? { rot: 0, vis: 1, z: 1, shade: 0, cast: tt > 0 ? tt : 0 } : { rot: -90 * (1 - tt), vis: 1, z: 2, shade: 0, cast: 0 };
+      if (d === 1) return isCur ? { rot: -90 * tt, vis: 1, shade: 0, cast: 0 } : { rot: 0, vis: 1, shade: 0, cast: 1 - tt };
+      return isCur ? { rot: 0, vis: 1, shade: 0, cast: tt > 0 ? tt : 0 } : { rot: -90 * (1 - tt), vis: 1, shade: 0, cast: 0 };
     }
     if (d === 1) {
-      if (!isLeft) return isCur ? { rot: -180 * Math.min(tt, 0.5), vis: tt < 0.5 ? 1 : 0, z: 3, shade: 0, cast: 0 } : { rot: 0, vis: 1, z: 2, shade: 0, cast: 1 - tt };
-      return isCur ? { rot: 0, vis: 1, z: 1, shade: 0, cast: tt > 0.5 ? (tt - 0.5) * 2 : 0 } : { rot: 180 * (1 - Math.max(tt, 0.5)), vis: tt >= 0.5 ? 1 : 0, z: 4, shade: 0, cast: 0 };
+      if (!isLeft) return isCur ? { rot: -180 * Math.min(tt, 0.5), vis: tt < 0.5 ? 1 : 0, shade: 0, cast: 0 } : { rot: 0, vis: 1, shade: 0, cast: 1 - tt };
+      return isCur ? { rot: 0, vis: 1, shade: 0, cast: tt > 0.5 ? (tt - 0.5) * 2 : 0 } : { rot: 180 * (1 - Math.max(tt, 0.5)), vis: tt >= 0.5 ? 1 : 0, shade: 0, cast: 0 };
     }
-    if (isLeft) return isCur ? { rot: 180 * Math.min(tt, 0.5), vis: tt < 0.5 ? 1 : 0, z: 3, shade: 0, cast: 0 } : { rot: 0, vis: 1, z: 2, shade: 0, cast: 1 - tt };
-    return isCur ? { rot: 0, vis: 1, z: 1, shade: 0, cast: tt > 0.5 ? (tt - 0.5) * 2 : 0 } : { rot: -180 * (1 - Math.max(tt, 0.5)), vis: tt >= 0.5 ? 1 : 0, z: 4, shade: 0, cast: 0 };
+    if (isLeft) return isCur ? { rot: 180 * Math.min(tt, 0.5), vis: tt < 0.5 ? 1 : 0, shade: 0, cast: 0 } : { rot: 0, vis: 1, shade: 0, cast: 1 - tt };
+    return isCur ? { rot: 0, vis: 1, shade: 0, cast: tt > 0.5 ? (tt - 0.5) * 2 : 0 } : { rot: -180 * (1 - Math.max(tt, 0.5)), vis: tt >= 0.5 ? 1 : 0, shade: 0, cast: 0 };
   };
   const style = useAnimatedStyle(() => {
     const g = geo();
     return {
       opacity: g.vis,
-      zIndex: g.z,
       transform: [{ perspective: PERSPECTIVE }, { rotateY: `${g.rot}deg` }],
     };
   });
@@ -292,7 +328,7 @@ function SurfaceContainer(p: ContainerProps) {
     return { opacity: active.value && specular ? Math.sin((a * Math.PI) / 90) * 0.18 : 0 };
   });
   const base: ViewStyle = {
-    position: 'absolute', top: 0, width: pw, height: ph,
+    position: 'absolute', top: 0, width: pw, height: ph, zIndex: p.z,
     left: flip ? (isLeft ? 0 : pw) : 0,
     transformOrigin: flip ? (isLeft ? 'right center' : 'left center') : 'left center',
     backgroundColor: p.theme.page, overflow: 'hidden', backfaceVisibility: 'hidden',
