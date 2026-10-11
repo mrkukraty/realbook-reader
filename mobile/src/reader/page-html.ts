@@ -47,13 +47,13 @@ html,body{margin:0;padding:0;background:${page};overflow:hidden;width:${g.width}
 /** In-page bridge. Kept ES2017 and dependency-free. */
 export const BRIDGE_JS = `(function(){
 var RN=window.ReactNativeWebView;function post(m){m.sid=window.__SID;m.gen=window.__GEN;RN&&RN.postMessage(JSON.stringify(m));}
-var c=document.getElementById('c'),G=window.__GEOM,cur=0,count=1;
+var c=document.getElementById('c'),G=window.__GEOM,cur=0,count=1,isBlank=false;
 function measure(){var e=document.getElementById('end');var r=e.getBoundingClientRect();var tx=-cur*G.width;
  var left=r.left-tx; count=Math.max(1,Math.floor((left-G.padX)/G.width)+1); if(r.top<G.padY-1 && left<G.padX+1) count=1; return count;}
 var EVEN=!!window.__EVEN;
 function lastEven(){return (count-1)-((count-1)%2);}
 function show(p){measure();if(p==='last')p=count-1;else if(p==='lastEven')p=lastEven();else if(p==='lastEven1')p=lastEven()+1;
- p=Math.max(0,p|0);if(EVEN)p=p-(p%2);var blank=p>=count;cur=blank?count-1:p;c.style.visibility=blank?'hidden':'visible';
+ p=Math.max(0,p|0);if(EVEN)p=p-(p%2);var blank=p>=count;isBlank=blank;cur=blank?count-1:p;c.style.visibility=blank?'hidden':'visible';
  c.style.transform='translateX('+(-cur*G.width)+'px)';post({type:'shown',page:blank?p:cur,pageCount:count,blank:blank,key:window.__KEY});}
 function textNodes(){var w=document.createTreeWalker(c,NodeFilter.SHOW_TEXT,null),a=[],n;while((n=w.nextNode()))a.push(n);return a;}
 function pageOfRect(r){var tx=-cur*G.width;return Math.max(0,Math.min(count-1,Math.floor((r.left-tx-G.padX+2)/G.width)));}
@@ -64,7 +64,18 @@ function wrapRange(start,end,cls,id){var ns=textNodes(),acc=0,todo=[];for(var i=
  todo.forEach(function(t){var n=t[0];if(t[2]<n.data.length)n.splitText(t[2]);var mid=t[1]>0?n.splitText(t[1]):n;var m=document.createElement('mark');m.className=cls;if(id)m.setAttribute('data-h',id);mid.parentNode.insertBefore(m,mid);m.appendChild(mid);});}
 function setHighlights(list){unwrap('mark[data-h]');(list||[]).forEach(function(h){wrapRange(h.start,h.end,h.color+(h.note?' note':''),h.id);});}
 function setSearch(s){unwrap('mark.search');if(s)wrapRange(s.start,s.end,'search',null);}
+// the text visible on the current page, for read-aloud: whole text nodes on this page, and the part of a
+// node (a paragraph running over a page break) that is on it; blocks are separated by a line break
+function charPage(n,o){var rg=document.createRange();rg.setStart(n,o);rg.setEnd(n,Math.min(n.data.length,o+1));var rs=rg.getClientRects();return rs.length?pageOfRect(rs[0]):-1;}
+function pageText(){if(isBlank)return '';measure();var ns=textNodes(),out='',lastB=null,BL='p,h1,h2,h3,h4,h5,h6,li,blockquote,div,td,th,pre,dt,dd,figcaption';
+ for(var i=0;i<ns.length;i++){var n=ns[i],L=n.data.length;if(!L)continue;var rg=document.createRange();rg.selectNodeContents(n);var rs=rg.getClientRects();if(!rs.length)continue;
+  var a=pageOfRect(rs[0]),b=pageOfRect(rs[rs.length-1]);if(b<cur||a>cur)continue;var s=0,e=L,lo,hi,m;
+  if(a<cur){lo=0;hi=L-1;while(lo<hi){m=(lo+hi)>>1;if(charPage(n,m)>=cur)hi=m;else lo=m+1;}s=lo;}
+  if(b>cur){lo=s;hi=L;while(lo<hi){m=(lo+hi)>>1;if(charPage(n,m)>cur)hi=m;else lo=m+1;}e=lo;}
+  var blk=n.parentElement&&n.parentElement.closest?n.parentElement.closest(BL):null;if(out&&blk!==lastB)out+='\\n';lastB=blk;out+=n.data.slice(s,e);}
+ return out;}
 window.RB={show:show,
+ pageText:function(req){post({type:'pageText',req:req,text:pageText()});},
  relayout:function(){var f=count>1?cur/count:0;measure();show(Math.round(f*count));},
  gotoAnchor:function(id){var el=document.getElementById(id);if(!el){show(0);return;}measure();show(pageOfRect(el.getBoundingClientRect()));},
  gotoOffset:function(off){measure();show(offsetToPage(off));},

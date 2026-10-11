@@ -27,6 +27,7 @@ import { PageSurface, type ShownInfo, type SurfaceEvent, type SurfaceTarget } fr
 import { ImageSurface } from './ImageSurface';
 import { ZoomView } from './ZoomView';
 import { FocusChip, FocusPanel } from './FocusTimer';
+import { ReadAloudBar, ReadAloudPanel, useReadAloud } from './ReadAloud';
 import { chapterOfPage, joinPdfPages, offsetOfPage, pageAtOffset, pdfChapters, type JoinedChapter } from './pdf-reflow';
 import { focusElapsed, useStats } from '../state/stats-store';
 import { formatMinutes, pagesPerMinute } from '../stats/reading-stats';
@@ -45,7 +46,7 @@ let keySeq = 0;
 const nextKey = () => `k${++keySeq}`;
 
 interface CurState { section: number; page: number; pageCount: number }
-type Panel = null | 'toc' | 'bookmarks' | 'highlights' | 'search' | 'appearance' | 'focus';
+type Panel = null | 'toc' | 'bookmarks' | 'highlights' | 'search' | 'appearance' | 'focus' | 'speech';
 
 export default function ReaderScreen({ bookId }: { bookId: string }) {
   const book = useLibrary((s) => s.books.find((b) => b.id === bookId));
@@ -202,11 +203,51 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
     }, Math.max(0, focus.durationMs - focusElapsed(focus, Date.now())));
     return () => clearTimeout(id);
   }, [focus, book.id]);
+  // ---------- read aloud ----------
+  const [textReq, setTextReq] = useState<string | null>(null);
+  const textWait = useRef<{ req: string; expect: string[]; got: Record<string, string>; resolve(t: string): void } | null>(null);
+  /** Text of the page(s) on screen. Text pages are asked for it (see 'pageText' in onEvent); PDF pages use the rebuilt text. */
+  const getPageText = async (): Promise<string> => {
+    const c = curRef.current;
+    if (!c || !(await waitFor(() => setReady(curSet.current), 2500))) throw new Error('Page not ready');
+    if (!isReflow) {
+      const r = pdfRef.current;
+      if (!isPdf || !r) return '';
+      const pages: (number | null)[] = mode === 'single' ? [c.page] : pagesOfSpread(spreadOfPage(c.page, 'double'), 'double', pageCount);
+      const parts = await Promise.all(pages.filter((p): p is number => p !== null).map((p) => r.getHtml(p)));
+      return parts.map((h) => htmlToText(h.replace(/<\/(p|h2)>/g, '\n'))).join('\n');
+    }
+    const sides: Side[] = mode === 'double' ? ['L', 'R'] : ['R'];
+    const expect = sides.map((s) => sidOf(curSet.current, s)).filter((sid) => !!targetsRef.current[sid]);
+    const req = nextKey();
+    return new Promise<string>((resolve, reject) => {
+      textWait.current = { req, expect, got: {}, resolve };
+      setTextReq(req);
+      setTimeout(() => { if (textWait.current?.req === req) { textWait.current = null; reject(new Error('Page text timed out')); } }, 1500);
+    });
+  };
+  const canSpeak = isReflow || isPdf;
+  const speech = useReadAloud({
+    locKey: cur ? `${cur.section}:${cur.page}:${styleKey}` : null,
+    getPageText,
+    canNext: () => canTurn(1),
+    next: () => flipRef.current?.next(),
+    lang: settings.speechLang,
+    rate: settings.speechRate,
+    bookLang: book.metadata.language,
+    notify: (m) => showToast(m),
+  });
+  const toggleSpeech = () => {
+    if (!canSpeak) { showToast('Comic pages are pictures, so they cannot be read aloud'); return; }
+    if (speech.state === 'off') { setChrome(false); speech.start(); } else if (speech.state === 'playing') speech.pause(); else speech.resume();
+  };
+
+  const awake = settings.keepAwake || speech.state === 'playing';
   useEffect(() => {
-    if (!settings.keepAwake) return;
+    if (!awake) return;
     void activateKeepAwakeAsync('reader').catch(() => {});
     return () => { void deactivateKeepAwake('reader').catch(() => {}); };
-  }, [settings.keepAwake]);
+  }, [awake]);
   const stats = useStats((s) => s.stats);
 
   const updateTargets = (patch: Targets) => {
@@ -588,6 +629,13 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
         if (size !== st.settings.fontSize) { st.update({ fontSize: size }); showToast(`Text size ${size}px`); }
         return;
       }
+      case 'pageText': {
+        const w = textWait.current;
+        if (!w || w.req !== e.req) return;
+        w.got[sid] = e.text;
+        if (w.expect.every((s) => s in w.got)) { textWait.current = null; w.resolve(w.expect.map((s) => w.got[s]).join('\n')); }
+        return;
+      }
       case 'link':
         if (Number.isFinite(e.section) && e.section >= 0 && e.section < sectionCount) {
           jumpTo({ section: e.section, pos: e.anchor ? { anchor: e.anchor } : { page: 0 } });
@@ -667,7 +715,7 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
           sid={sid} target={tg} getSection={getSection} settings={settings} styleKey={styleKey} geom={geom}
           even={mode === 'double' && side === 'L'} lang={book.metadata.language}
           highlightsFor={highlightsFor} highlightsVersion={hlVersion} searchMark={searchMark}
-          interactive={role === 'cur'} pageColor={settings.customPageColor ?? theme.page}
+          interactive={role === 'cur'} textReq={role === 'cur' ? textReq : null} pageColor={settings.customPageColor ?? theme.page}
           onShown={onShown} onEvent={onEvent}
         />
       );
@@ -754,6 +802,13 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
         <FocusChip color={theme.chromeText} background={theme.chrome} onPress={() => setPanel('focus')} />
       </View>
 
+      {speech.state !== 'off' && !selection ? (
+        <View style={{ position: 'absolute', alignSelf: 'center', bottom: insets.bottom + (chrome ? 104 : 12 + (flat ? FOOTER : 0)) }}>
+          <ReadAloudBar state={speech.state} color={theme.chromeText} background={theme.chrome}
+            onToggle={toggleSpeech} onStop={speech.stop} onOptions={() => setPanel('speech')} />
+        </View>
+      ) : null}
+
       {zoom && !isReflow && cur ? (
         <View style={{ position: 'absolute', left: 0, right: 0, top: insets.top, bottom: insets.bottom, backgroundColor: settings.customDeskColor ?? theme.desk }}>
           <ZoomView pages={zoomPages()} pw={pw} ph={ph} start={{ scale: 2, ...zoom }} getPageUri={getZoomPage}
@@ -778,6 +833,7 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
             <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
               <IconBtn icon="chevron-back-circle-outline" label="Previous page" color={theme.chromeText} onPress={() => flipRef.current?.prev()} />
               <IconBtn icon="timer-outline" label="Focus timer and reading status" color={theme.chromeText} onPress={() => setPanel('focus')} />
+              <IconBtn icon={speech.state === 'playing' ? 'pause-circle-outline' : 'volume-high-outline'} label={speech.state === 'off' ? 'Read aloud' : speech.state === 'playing' ? 'Pause reading aloud' : 'Continue reading aloud'} color={theme.chromeText} onPress={toggleSpeech} />
               <Pressable style={{ flex: 1 }} onPress={() => setGoto(true)} accessibilityRole="button" accessibilityLabel={`${progressLabel}. Go to page`}>
                 <Text style={{ color: theme.muted, fontSize: 12, textAlign: 'center' }} numberOfLines={1}>{progressLabel}</Text>
               </Pressable>
@@ -831,6 +887,7 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
       <AppearancePanel visible={panel === 'appearance'} onClose={() => setPanel(null)} reflow={isReflow} pdf={isPdf} />
       <FocusPanel visible={panel === 'focus'} onClose={() => setPanel(null)} bookId={book.id} fraction={currentFraction}
         timeLeftLabel={timeLeft ? `About ${timeLeft.replace(' left', '')} left in this book at your pace.` : isReflow && !pdfText ? undefined : 'Read a few minutes to learn your pace - then the time left in the book is shown here.'} />
+      <ReadAloudPanel visible={panel === 'speech'} onClose={() => setPanel(null)} />
       <PromptModal visible={goto} title={isReflow && !pdfText ? 'Go to position' : 'Go to page'}
         message={isReflow && !pdfText ? 'Enter a percentage (0-100).' : `Enter a page number (1-${pageCount}).`} placeholder={isReflow && !pdfText ? 'e.g. 50' : 'e.g. 42'} confirmLabel="Go"
         onCancel={() => setGoto(false)}
