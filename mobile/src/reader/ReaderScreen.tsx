@@ -233,6 +233,7 @@ function Reader({ book, manifest }: { book: BookRecord; manifest: ContentManifes
     canNext: () => canTurn(1),
     next: () => flipRef.current?.next(),
     lang: settings.speechLang,
+    voice: settings.speechVoice,
     rate: settings.speechRate,
     bookLang: book.metadata.language,
     notify: (m) => showToast(m),

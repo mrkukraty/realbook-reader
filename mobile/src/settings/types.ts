@@ -7,9 +7,6 @@ export const FONT_IDS = [
   'typewriter', 'mono',
 ] as const;
 export type FontFamilyId = (typeof FONT_IDS)[number];
-/** Read-aloud voices: 'auto' picks the Indian language of the text, falling back to Indian English. */
-export const SPEECH_LANG_IDS = ['auto', 'en-IN', 'hi-IN', 'mr-IN', 'bn-IN', 'ta-IN', 'te-IN', 'kn-IN', 'ml-IN', 'gu-IN', 'pa-IN', 'ur-IN'] as const;
-export type SpeechLangId = (typeof SPEECH_LANG_IDS)[number];
 
 /** Same shape as the web app's Settings (some desktop-only fields are kept for compatibility). */
 export interface Settings {
@@ -42,8 +39,14 @@ export interface Settings {
   warmth: number;
   /** keep the screen on while the reader is open */
   keepAwake: boolean;
-  /** read aloud: voice language and speed (1 = normal) */
-  speechLang: SpeechLangId;
+  /**
+   * read aloud: 'auto' reads each passage in its own language with the reader's accent; otherwise a language
+   * tag such as 'en-GB' or 'es-MX' that everything is read in
+   */
+  speechLang: string;
+  /** a specific installed voice for speechLang ('' = the best one) */
+  speechVoice: string;
+  /** read-aloud speed (1 = normal) */
   speechRate: number;
 }
 
@@ -51,7 +54,7 @@ export const defaultSettings: Settings = {
   theme: 'ivory', perfMode: 'balanced', layout: 'auto', fontFamily: 'serif', fontSize: 19, lineHeight: 1.6,
   margin: 8, align: 'justify', readingWidth: 100, animationSpeed: 1, animations: true, frame: 'hardcover',
   texture: true, textureStrength: 0.5, shadowStrength: 0.6, pdfView: 'page', pdfColors: 'theme',
-  paraSpacing: 0.2, dim: 0, warmth: 0, keepAwake: true, speechLang: 'auto', speechRate: 1,
+  paraSpacing: 0.2, dim: 0, warmth: 0, keepAwake: true, speechLang: 'auto', speechVoice: '', speechRate: 1,
 };
 
 export const LIMITS = {
@@ -87,7 +90,8 @@ export function normalizeSettings(raw: unknown): Settings {
   s.keepAwake = s.keepAwake !== false;
   if (s.pdfView !== 'page' && s.pdfView !== 'text') s.pdfView = 'page';
   if (s.pdfColors !== 'theme' && s.pdfColors !== 'original') s.pdfColors = 'theme';
-  if (!(SPEECH_LANG_IDS as readonly string[]).includes(s.speechLang)) s.speechLang = 'auto';
+  if (typeof s.speechLang !== 'string' || !/^[A-Za-z]{2,3}([-_][A-Za-z0-9]{1,8})*$/.test(s.speechLang)) s.speechLang = 'auto';
+  if (typeof s.speechVoice !== 'string' || s.speechVoice.length > 200 || s.speechLang === 'auto') s.speechVoice = '';
   s.speechRate = num(s.speechRate, LIMITS.speechRate, 1);
   return s;
 }

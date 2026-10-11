@@ -1,14 +1,16 @@
-// Read aloud. Speaks the visible page with the phone's own voices (Indian English, Hindi and other Indian
-// languages), then turns the page and carries on, so a book can be listened to hands-free. Nothing is sent
-// anywhere: the speech engine is the one built into iOS / Android.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+// Read aloud. Speaks the visible page with the phone's own voices, then turns the page and carries on, so a
+// book can be listened to hands-free. Any language and accent installed on the phone can be used; by default
+// each passage is read in its own language with the reader's own accent (taken from the phone's region).
+// Nothing is sent anywhere: the speech engine is the one built into iOS / Android.
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import * as Speech from 'expo-speech';
+import { getLocales } from 'expo-localization';
 import { Ionicons } from '@expo/vector-icons';
 import { IconBtn, Stepper, useAppTheme } from '../components/ui';
 import { useSettings } from '../state/settings-store';
-import { LIMITS, SPEECH_LANG_IDS, type SpeechLangId } from '../settings/types';
-import { SPEECH_LANG_LABELS, detectSpeechLang, splitForSpeech } from './speech-text';
+import { LIMITS } from '../settings/types';
+import { detectSpeechLanguage, localeLabel, normTag, pickVoice, splitForSpeech, voiceLocales, type VoiceInfo } from './speech-text';
 import { Sheet } from './panels';
 
 export type ReadAloudState = 'off' | 'playing' | 'paused';
@@ -20,7 +22,9 @@ interface Options {
   getPageText(): Promise<string>;
   canNext(): boolean;
   next(): void;
-  lang: SpeechLangId;
+  /** 'auto' or a language tag (settings.speechLang) and an optional voice id for it */
+  lang: string;
+  voice: string;
   rate: number;
   /** the book's own language tag, if known */
   bookLang?: string;
@@ -28,26 +32,21 @@ interface Options {
   notify(message: string): void;
 }
 
-const norm = (l: string) => l.replace('_', '-').toLowerCase();
-let voices: Speech.Voice[] | null = null;
-async function loadVoices(): Promise<void> {
-  if (voices?.length) return;
+let voices: VoiceInfo[] = [];
+async function loadVoices(): Promise<VoiceInfo[]> {
+  if (voices.length) return voices;
   try { voices = await Speech.getAvailableVoicesAsync(); } catch { voices = []; }
+  return voices;
 }
-/** The best installed voice for a language (enhanced quality if present), and whether the language is missing. */
-function voiceFor(language: string): { voice?: string; missing: boolean } {
-  if (!voices?.length) return { missing: false };
-  const want = norm(language);
-  const exact = voices.filter((v) => norm(v.language) === want);
-  const best = exact.find((v) => v.quality === Speech.VoiceQuality.Enhanced) ?? exact[0];
-  if (best) return { voice: best.identifier, missing: false };
-  return { missing: !voices.some((v) => norm(v.language).split('-')[0] === want.split('-')[0]) };
+/** The languages the phone is set to, most preferred first, e.g. ['en-IN', 'hi-IN']. */
+function deviceTags(): string[] {
+  try { return getLocales().map((l) => l.languageTag); } catch { return []; }
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const MISSING_HINT = Platform.OS === 'ios'
-  ? 'Add it in Settings › Accessibility › Spoken Content › Voices.'
-  : 'Add it in Settings › Text-to-speech output › Install voice data.';
+  ? 'Add voices in Settings › Accessibility › Spoken Content › Voices.'
+  : 'Add voices in Settings › Text-to-speech output › Install voice data.';
 
 export function useReadAloud(o: Options) {
   const [state, setStateRaw] = useState<ReadAloudState>('off');
@@ -87,14 +86,16 @@ export function useReadAloud(o: Options) {
     if (i >= chunks.current.length) { advance(); return; }
     const text = chunks.current[i];
     const cur = oRef.current;
-    const language = cur.lang === 'auto' ? detectSpeechLang(text, cur.bookLang) : cur.lang;
-    const v = voiceFor(language);
-    if (v.missing && !warned.current.has(language)) {
-      warned.current.add(language);
-      cur.notify(`No ${SPEECH_LANG_LABELS[language]} voice on this phone. ${MISSING_HINT}`);
+    const tags = deviceTags();
+    const v = cur.lang === 'auto'
+      ? pickVoice(detectSpeechLanguage(text, [cur.bookLang, ...tags]), voices, tags)
+      : pickVoice(cur.lang, voices, tags, cur.voice || undefined);
+    if (v.missing && !warned.current.has(v.language)) {
+      warned.current.add(v.language);
+      cur.notify(`No ${localeLabel(v.language)} voice on this phone. ${MISSING_HINT}`);
     }
     const onward = () => { if (my === run.current && stateRef.current === 'playing') speakFrom(i + 1); };
-    Speech.speak(text, { language, voice: v.voice, rate: cur.rate, onDone: onward, onError: onward });
+    Speech.speak(text, { language: v.language, voice: v.voice, rate: cur.rate, onDone: onward, onError: onward });
   };
 
   const readPage = async () => {
@@ -146,7 +147,7 @@ export function useReadAloud(o: Options) {
     if (stateRef.current !== 'playing' || !chunks.current.length) return;
     void halt().then(() => { if (stateRef.current === 'playing') speakFrom(idx.current); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [o.lang, o.rate]);
+  }, [o.lang, o.voice, o.rate]);
 
   useEffect(() => () => { stateRef.current = 'off'; run.current++; void Speech.stop().catch(() => {}); }, []);
 
@@ -171,25 +172,58 @@ export function ReadAloudBar({ state, color, background, onToggle, onStop, onOpt
 export function ReadAloudPanel({ visible, onClose }: { visible: boolean; onClose(): void }) {
   const t = useAppTheme();
   const lang = useSettings((x) => x.settings.speechLang);
+  const voice = useSettings((x) => x.settings.speechVoice);
   const rate = useSettings((x) => x.settings.speechRate);
   const update = useSettings((x) => x.update);
+  const [list, setList] = useState<VoiceInfo[]>(voices);
+  useEffect(() => { if (visible) void loadVoices().then(setList); }, [visible]);
+  const tags = useMemo(deviceTags, [visible]);
+  const locales = useMemo(() => voiceLocales(list, tags), [list, tags]);
+  const selTag = lang === 'auto' ? 'auto' : normTag(lang);
+  // what Auto uses for the reader's own language, to show the accent it will speak with
+  const own = tags.length ? pickVoice(tags[0].split('-')[0], list, tags) : null;
+
+  const row = (key: string, label: string, sub: string | null, sel: boolean, onPress: () => void) => (
+    <Pressable key={key} onPress={onPress} accessibilityRole="radio" accessibilityState={{ selected: sel }} accessibilityLabel={label}
+      style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 10, borderRadius: 8, backgroundColor: sel ? t.border : 'transparent' }}>
+      <View style={{ flex: 1 }}>
+        <Text style={{ color: t.chromeText, fontSize: 16 }}>{label}</Text>
+        {sub ? <Text style={{ color: t.muted, fontSize: 12 }}>{sub}</Text> : null}
+      </View>
+      {sel ? <Ionicons name="checkmark" size={18} color={t.accent} /> : null}
+    </Pressable>
+  );
+
   return (
     <Sheet visible={visible} title="Read aloud" onClose={onClose}>
       <ScrollView contentContainerStyle={{ padding: 16 }}>
         <Stepper label="Speed" value={rate} min={LIMITS.speechRate[0]} max={LIMITS.speechRate[1]} step={0.1} format={(v) => `${v.toFixed(1)}×`} onChange={(v) => update({ speechRate: Math.round(v * 10) / 10 })} />
-        <Text style={{ color: t.muted, marginTop: 14, marginBottom: 6 }}>Voice</Text>
-        {SPEECH_LANG_IDS.map((id) => {
-          const sel = id === lang;
+        <Text style={{ color: t.muted, marginTop: 14, marginBottom: 6 }}>Language and accent</Text>
+        {row('auto', 'Auto', own && !own.missing ? `Each language in its own voice, with your accent - ${localeLabel(own.language)}` : 'Each language in its own voice, with your accent', selTag === 'auto', () => update({ speechLang: 'auto', speechVoice: '' }))}
+        {locales.map((l) => {
+          const sel = l.tag === selTag;
           return (
-            <Pressable key={id} onPress={() => update({ speechLang: id })} accessibilityRole="radio" accessibilityState={{ selected: sel }} accessibilityLabel={SPEECH_LANG_LABELS[id]}
-              style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 11, paddingHorizontal: 10, borderRadius: 8, backgroundColor: sel ? t.border : 'transparent' }}>
-              <Text style={{ flex: 1, color: t.chromeText, fontSize: 16 }}>{SPEECH_LANG_LABELS[id]}</Text>
-              {sel ? <Ionicons name="checkmark" size={18} color={t.accent} /> : null}
-            </Pressable>
+            <View key={l.tag}>
+              {row(l.tag, l.label, null, sel, () => update({ speechLang: l.tag, speechVoice: '' }))}
+              {sel && l.voices.length > 1 ? (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 10, paddingBottom: 8, paddingTop: 2 }}>
+                  {l.voices.map((v) => {
+                    const on = v.identifier === voice;
+                    return (
+                      <Pressable key={v.identifier} onPress={() => update({ speechVoice: on ? '' : v.identifier })} accessibilityRole="radio" accessibilityState={{ selected: on }} accessibilityLabel={`Voice ${v.name}`}
+                        style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14, borderWidth: 1, borderColor: on ? t.accent : t.border, backgroundColor: on ? t.card : 'transparent' }}>
+                        <Text style={{ color: t.chromeText, fontSize: 13 }}>{v.name}{v.quality === 'Enhanced' ? ' ★' : ''}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : null}
+            </View>
           );
         })}
+        {!list.length ? <Text style={{ color: t.muted, marginTop: 8 }}>Looking for the voices on this phone…</Text> : null}
         <Text style={{ color: t.muted, fontSize: 12, lineHeight: 17, marginTop: 12 }}>
-          Auto reads Hindi, Tamil, Bengali and other Indian scripts in their own voice and everything else in Indian English. The voices are the ones installed on this phone. {MISSING_HINT}
+          These are the voices installed on this phone. Auto follows your phone's language and region, so English is read in your own country's accent where the phone has one. {MISSING_HINT}
           {Platform.OS === 'ios' ? ' On iPhone the ring/silent switch must be on ring to hear the voice.' : ''}
         </Text>
       </ScrollView>
