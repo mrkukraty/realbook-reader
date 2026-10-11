@@ -2,6 +2,18 @@
 
 A local-first ebook reader built with React, TypeScript and Vite. It runs in the browser (installable as a PWA, works offline) and as a Windows desktop app (Tauri 2). Your books never leave your device.
 
+## Get the app
+
+| Your device | What to use |
+| --- | --- |
+| **Android** | [Download the Android app (APK)](https://github.com/mrkukraty/realbook-reader/releases/download/v1.0.0/RealBook-Reader-1.0.0.apk), open the file and allow the install |
+| **iPhone / iPad** | Open the web app at **https://realbook-reader.expo.app** in Safari, then Share › Add to Home Screen |
+| **Computer or any browser** | **https://realbook-reader.expo.app** |
+
+**[Read the user guide](docs/USER_GUIDE.md)** for installing, adding books, read aloud, the focus timer, PDFs and everything else.
+
+The Android app (in [`mobile/`](mobile/README.md)) has the most features: read aloud in any language and accent, a focus timer, reading stats, a text view for PDFs and pinch zoom. The web app does not have those yet. All releases are on the [releases page](https://github.com/mrkukraty/realbook-reader/releases).
+
 ## Features
 
 - Import books by file picker or drag and drop; duplicate detection by SHA-256 hash.
