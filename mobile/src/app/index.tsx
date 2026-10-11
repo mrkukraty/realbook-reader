@@ -158,7 +158,6 @@ export default function LibraryScreen() {
         headerRight: () => (
           <View style={{ flexDirection: 'row' }}>
             <IconBtn icon="add-circle-outline" label="Import books" onPress={doImport} />
-            <IconBtn icon="person-circle-outline" label="Account" onPress={() => router.push('/account')} />
             <IconBtn icon="settings-outline" label="Settings" onPress={() => router.push('/settings')} />
           </View>
         ),

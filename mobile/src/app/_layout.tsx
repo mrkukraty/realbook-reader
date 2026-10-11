@@ -6,7 +6,6 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useSettings } from '@/state/settings-store';
 import { useLibrary } from '@/state/library-store';
-import { useAccount } from '@/state/account-store';
 import { useAppTheme } from '@/components/ui';
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -19,7 +18,7 @@ export default function RootLayout() {
 
   useEffect(() => {
     void loadSettings();
-    void loadLibrary().then(() => useAccount.getState().init());
+    void loadLibrary();
   }, [loadSettings, loadLibrary]);
   useEffect(() => {
     if (settingsLoaded) void SplashScreen.hideAsync().catch(() => {});
@@ -41,7 +40,6 @@ export default function RootLayout() {
           <Stack.Screen name="index" options={{ title: 'Library' }} />
           <Stack.Screen name="book/[id]" options={{ title: 'Book details' }} />
           <Stack.Screen name="settings" options={{ title: 'Settings' }} />
-          <Stack.Screen name="account" options={{ title: 'Account' }} />
           <Stack.Screen name="reader/[id]" options={{ headerShown: false, animation: 'fade' }} />
         </Stack>
       </SafeAreaProvider>
